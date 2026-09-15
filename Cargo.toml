@@ -1,0 +1,33 @@
+[package]
+name = "ochco"
+version = "0.1.0"
+edition = "2024"
+description = "Select a screen region and copy the recognized text"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
+arboard = "3.6"
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+env_logger = "0.11.11"
+global-hotkey = "0.8"
+image = { version = "0.25", default-features = false, features = ["png"] }
+imageproc = { version = "0.27", default-features = false }
+log = "0.4.34"
+ort = "2.0.0-rc.13"
+tray-icon = "0.25"
+xcap = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = "thin"
+strip = true
