@@ -5,8 +5,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use image::{RgbImage, imageops};
 use ort::session::Session;
-use ort::value::TensorRef;
 
+use super::onnx::OnnxModel;
 use super::preprocess::to_bgr_chw;
 
 const INPUT_HEIGHT: u32 = 48;
@@ -14,24 +14,24 @@ const INPUT_HEIGHT: u32 = 48;
 const MIN_INPUT_WIDTH: u32 = 320;
 
 pub struct Recognizer {
-    session: Session,
+    model: OnnxModel,
     /// Output class index -> text. Index 0 is the CTC blank.
     charset: Vec<String>,
 }
 
 impl Recognizer {
     /// Loads the model; the dictionary comes from the model metadata or `dict.txt` next to it.
-    pub fn load(model: &Path) -> Result<Self> {
-        let session =
-            super::load_session(model).with_context(|| format!("loading recognition model {}", model.display()))?;
+    pub fn load(path: &Path) -> Result<Self> {
+        let model = OnnxModel::load(path).with_context(|| format!("loading recognition model {}", path.display()))?;
+        let session = model.session();
 
         // RapidOCR exports embed the dictionary; official PaddlePaddle exports leave the key empty.
         let embedded = session.metadata().ok().and_then(|m| m.custom("character"));
         let dict = if let Some(embedded) = embedded.filter(|chars| !chars.trim().is_empty()) {
             embedded
         } else {
-            let path = model.with_file_name("dict.txt");
-            std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?
+            let dict_path = path.with_file_name("dict.txt");
+            std::fs::read_to_string(&dict_path).with_context(|| format!("reading {}", dict_path.display()))?
         };
 
         let mut charset: Vec<String> = std::iter::once(String::new())
@@ -39,7 +39,7 @@ impl Recognizer {
             .collect();
 
         // Models trained with `use_space_char` have one extra class for the space.
-        let classes = output_classes(&session)?;
+        let classes = output_classes(session)?;
         match classes.checked_sub(charset.len()) {
             Some(0) => {}
             Some(1) => charset.push(" ".to_owned()),
@@ -49,22 +49,18 @@ impl Recognizer {
             ),
         }
 
-        Ok(Self { session, charset })
+        Ok(Self { model, charset })
     }
 
     /// Recognizes a single cropped text line. Returns the text and its mean confidence.
     pub fn recognize(&mut self, line: &RgbImage) -> Result<(String, f32)> {
         let input = LineTensor::new(line);
         let shape = [1, 3, INPUT_HEIGHT as usize, input.width];
-        let outputs = self.session.run(ort::inputs![TensorRef::from_array_view((
-            shape,
-            input.data.as_slice()
-        ))?])?;
+        let charset = &self.charset;
 
-        let (output_shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
-        let classes = output_shape[2] as usize;
-
-        Ok(ctc_decode(probabilities, classes, &self.charset))
+        self.model.run(shape, &input.data, |output_shape, probabilities| {
+            ctc_decode(probabilities, output_shape[2] as usize, charset)
+        })
     }
 }
 

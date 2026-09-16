@@ -5,7 +5,8 @@ use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint,
 };
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetCursorPos, GetMessageW, MSG, PostThreadMessageW, TranslateMessage, WM_APP,
@@ -21,6 +22,13 @@ pub fn attach_parent_console() {
 pub fn init_dpi_awareness() {
     // SAFETY: no pointers involved; fails only if awareness was already set, which is fine.
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+}
+
+/// Asks Windows to move this process's pages out of physical memory. Pages that are needed
+/// again are faulted back in, so this only frees RAM held by idle state.
+pub fn trim_working_set() {
+    // SAFETY: the current process handle is always valid; no pointers involved.
+    unsafe { K32EmptyWorkingSet(GetCurrentProcess()) };
 }
 
 /// Cursor position in physical virtual-desktop coordinates.

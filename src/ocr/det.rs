@@ -5,11 +5,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use image::{GrayImage, Luma, RgbImage, imageops};
 use imageproc::contours::{BorderType, find_contours};
-use ort::session::Session;
-use ort::value::TensorRef;
 
 use super::geometry::{self, BoundingBox, Point, Quad};
 use super::models::DetectorParams;
+use super::onnx::OnnxModel;
 use super::preprocess::to_bgr_chw;
 
 const MIN_BOX_SIDE: f32 = 3.0;
@@ -26,16 +25,15 @@ const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 pub struct Detector {
-    session: Session,
+    model: OnnxModel,
     params: DetectorParams,
 }
 
 impl Detector {
     pub fn load(path: &Path, params: DetectorParams) -> Result<Self> {
-        let session =
-            super::load_session(path).with_context(|| format!("loading detection model {}", path.display()))?;
+        let model = OnnxModel::load(path).with_context(|| format!("loading detection model {}", path.display()))?;
 
-        Ok(Self { session, params })
+        Ok(Self { model, params })
     }
 
     /// Returns text boxes in `img` coordinates.
@@ -46,24 +44,22 @@ impl Detector {
 
         let input = to_bgr_chw(&resized, |c, v| (v / 255.0 - MEAN[c]) / STD[c]);
         let shape = [1, 3, input_h as usize, input_w as usize];
-        let outputs = self
-            .session
-            .run(ort::inputs![TensorRef::from_array_view((shape, input.as_slice()))?])?;
+        let params = self.params;
 
-        let (map_shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
-        let map = ProbabilityMap {
-            data: probabilities,
-            params: self.params,
-            width: map_shape[3] as u32,
-            height: map_shape[2] as u32,
-        };
+        let quads = self.model.run(shape, &input, |map_shape, probabilities| {
+            let map = ProbabilityMap {
+                data: probabilities,
+                params,
+                width: map_shape[3] as u32,
+                height: map_shape[2] as u32,
+            };
 
-        let (sx, sy) = (w as f32 / map.width as f32, h as f32 / map.height as f32);
-        let quads = map
-            .text_boxes()
-            .into_iter()
-            .map(|quad| quad.map(|p| Point::new(p.x * sx, p.y * sy)))
-            .collect();
+            let (sx, sy) = (w as f32 / map.width as f32, h as f32 / map.height as f32);
+            map.text_boxes()
+                .into_iter()
+                .map(|quad| quad.map(|p| Point::new(p.x * sx, p.y * sy)))
+                .collect()
+        })?;
 
         Ok(quads)
     }

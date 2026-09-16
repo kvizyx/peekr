@@ -3,16 +3,13 @@
 mod det;
 mod geometry;
 pub mod models;
+mod onnx;
 mod preprocess;
 mod rec;
 mod text;
 
-use std::path::Path;
-
 use anyhow::Result;
 use image::RgbaImage;
-use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
 
 use self::det::Detector;
 use self::geometry::Quad;
@@ -146,12 +143,6 @@ fn pick_best_reading(candidates: Vec<(String, f32)>) -> Option<(String, f32)> {
     };
 
     candidates.into_iter().max_by(|a, b| rank(a).total_cmp(&rank(b)))
-}
-
-fn load_session(path: &Path) -> ort::Result<Session> {
-    Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .commit_from_file(path)
 }
 
 #[cfg(test)]

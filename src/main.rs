@@ -72,6 +72,8 @@ fn run_tray_app(store: ModelStore, config: OcrConfig) -> Result<()> {
         }
 
         if capture {
+            worker.prepare();
+
             match capture_selection() {
                 Ok(Some(region)) => worker.submit(region),
                 Ok(None) => log::debug!("selection cancelled"),
