@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow};
+use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Painter, Pos2, Rect, Stroke, StrokeKind, TextureOptions, Vec2,
     ViewportCommand,
@@ -89,6 +90,12 @@ impl eframe::App for Overlay {
         let screen = ui.max_rect();
         ctx.set_cursor_icon(CursorIcon::Crosshair);
 
+        // The borderless window covers the whole monitor, so the GPU driver treats it as a
+        // fullscreen app and enables variable refresh rate (G-Sync / FreeSync). Repainting only
+        // on input makes the frame rate jump, which VRR monitors show as brightness flicker;
+        // a steady vsynced frame rate avoids that.
+        ctx.request_repaint();
+
         let (pressed, released, cursor, cancel) = ctx.input(|i| {
             (
                 i.pointer.primary_pressed(),
@@ -109,7 +116,10 @@ impl eframe::App for Overlay {
         let selection = self
             .drag_start
             .zip(cursor)
-            .map(|(start, end)| Rect::from_two_pos(start, end).intersect(screen));
+            .map(|(start, end)| Rect::from_two_pos(start, end).intersect(screen))
+            // Whole physical pixels, so the dimmed rectangles around the selection tile without
+            // seams or overlapping edges.
+            .map(|sel| sel.round_to_pixels(ctx.pixels_per_point()));
 
         let painter = ui.painter();
         self.paint_screenshot(painter, screen, selection);
@@ -177,7 +187,7 @@ impl Overlay {
             painter.rect_filled(rect, 0.0, DIM);
         }
 
-        painter.rect_stroke(sel, 0.0, Stroke::new(1.5, ACCENT), StrokeKind::Outside);
+        painter.rect_stroke(sel, 0.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
 
         let size = self.to_pixels(screen, sel);
         let label = format!("{} × {}", size.width, size.height);
