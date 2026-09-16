@@ -35,14 +35,15 @@ struct PixelRect {
 pub fn select_region(shot: &Screenshot) -> Result<Option<RgbaImage>> {
     let selection: Rc<Cell<Option<PixelRect>>> = Rc::default();
 
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("ochco")
+        .with_decorations(false)
+        .with_always_on_top()
+        .with_taskbar(false)
+        .with_active(true);
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("ochco")
-            .with_decorations(false)
-            .with_always_on_top()
-            .with_taskbar(false)
-            .with_active(true)
-            .with_monitor(shot.monitor_index),
+        viewport: cover_monitor(viewport, shot),
         centered: false,
         ..Default::default()
     };
@@ -76,6 +77,28 @@ pub fn select_region(shot: &Screenshot) -> Result<Option<RgbaImage>> {
     Ok(region)
 }
 
+/// Makes the window cover the monitor the screenshot was taken from.
+///
+/// On Windows this is a plain window of the monitor's size rather than a fullscreen one:
+/// switching the display in and out of fullscreen mode makes the screen flash dark when the
+/// overlay opens and closes.
+#[cfg(windows)]
+fn cover_monitor(viewport: egui::ViewportBuilder, shot: &Screenshot) -> egui::ViewportBuilder {
+    let (x, y) = (shot.origin.0 as f32, shot.origin.1 as f32);
+    let (width, height) = (shot.image.width() as f32, shot.image.height() as f32);
+
+    viewport
+        .with_position([x / shot.scale, y / shot.scale])
+        .with_inner_size([width / shot.scale, height / shot.scale])
+}
+
+/// Makes the window cover the monitor the screenshot was taken from. Wayland does not let
+/// clients position windows, so fullscreen is the only way to get there.
+#[cfg(not(windows))]
+fn cover_monitor(viewport: egui::ViewportBuilder, shot: &Screenshot) -> egui::ViewportBuilder {
+    viewport.with_monitor(shot.monitor_index)
+}
+
 struct Overlay {
     texture: egui::TextureHandle,
     image_size: [usize; 2],
@@ -90,7 +113,7 @@ impl eframe::App for Overlay {
         let screen = ui.max_rect();
         ctx.set_cursor_icon(CursorIcon::Crosshair);
 
-        // The borderless window covers the whole monitor, so the GPU driver treats it as a
+        // The borderless window covers the whole monitor, so the GPU driver may treat it as a
         // fullscreen app and enables variable refresh rate (G-Sync / FreeSync). Repainting only
         // on input makes the frame rate jump, which VRR monitors show as brightness flicker;
         // a steady vsynced frame rate avoids that.

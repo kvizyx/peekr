@@ -1,10 +1,7 @@
 use std::ptr::null_mut;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use windows_sys::Win32::Foundation::{LPARAM, POINT, RECT};
-use windows_sys::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint,
-};
+use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
@@ -32,6 +29,11 @@ pub fn trim_working_set() {
     unsafe { K32EmptyWorkingSet(GetCurrentProcess()) };
 }
 
+/// Directory for per-user settings (`%APPDATA%`).
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+}
+
 /// Cursor position in physical virtual-desktop coordinates.
 pub fn cursor_position() -> Option<(i32, i32)> {
     let mut point = POINT { x: 0, y: 0 };
@@ -40,35 +42,6 @@ pub fn cursor_position() -> Option<(i32, i32)> {
     let ok = unsafe { GetCursorPos(&raw mut point) };
 
     (ok != 0).then_some((point.x, point.y))
-}
-
-/// Index of the monitor in the order winit enumerates monitors.
-pub fn monitor_index(monitor: &xcap::Monitor) -> Option<usize> {
-    /// `EnumDisplayMonitors` callback; `data` points to the `Vec<HMONITOR>` being filled.
-    unsafe extern "system" fn collect(monitor: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> i32 {
-        // SAFETY: `data` is the `&mut Vec` passed below, alive for the whole enumeration.
-        let monitors = unsafe { &mut *(data as *mut Vec<HMONITOR>) };
-        monitors.push(monitor);
-        1
-    }
-
-    let mut monitors: Vec<HMONITOR> = Vec::new();
-
-    // SAFETY: the callback only touches `monitors`, which outlives this synchronous call.
-    unsafe {
-        EnumDisplayMonitors(null_mut(), null_mut(), Some(collect), (&raw mut monitors) as LPARAM);
-    }
-
-    // The top-left pixel identifies the monitor.
-    let corner = POINT {
-        x: monitor.x().ok()?,
-        y: monitor.y().ok()?,
-    };
-
-    // SAFETY: no pointers involved.
-    let target = unsafe { MonitorFromPoint(corner, MONITOR_DEFAULTTONEAREST) };
-
-    monitors.iter().position(|&m| m == target)
 }
 
 /// Blocks the main thread until the app has an event to handle, pumping the Win32 messages that

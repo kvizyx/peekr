@@ -1,25 +1,25 @@
 //! The tray application and one-shot captures.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
-use anyhow::{Context, Result};
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use anyhow::Result;
 use image::RgbaImage;
 
+use crate::config::Config;
+use crate::hotkey::GlobalHotkey;
 use crate::ocr::models::{ModelStore, OcrConfig};
 use crate::ocr::{self, OcrEngine};
 use crate::platform::{EventLoop, Waker};
+use crate::shortcut::Shortcut;
 use crate::tray::{Tray, TrayAction};
 use crate::worker::OcrWorker;
-use crate::{capture, clipboard, overlay};
-
-const HOTKEY_LABEL: &str = "Ctrl+Alt+T";
+use crate::{capture, clipboard, overlay, settings};
 
 /// Everything the main thread reacts to. Hotkey, tray and worker callbacks run on their own
 /// threads (or inside the Win32 message pump) and only send events.
 enum AppEvent {
     Capture,
+    OpenSettings,
     Quit,
     Status(String),
 }
@@ -38,7 +38,7 @@ impl EventSender {
     }
 }
 
-pub fn run_tray(store: ModelStore, config: OcrConfig) {
+pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
     let event_loop = EventLoop::new();
     let (sender, events) = channel();
     let sender = EventSender {
@@ -46,21 +46,24 @@ pub fn run_tray(store: ModelStore, config: OcrConfig) {
         waker: event_loop.waker(),
     };
 
-    let worker = OcrWorker::spawn(store, config, {
+    let worker = OcrWorker::spawn(store, ocr_config, {
         let sender = sender.clone();
         move |status| sender.send(AppEvent::Status(status))
     });
 
-    // Both must stay alive for the whole run; either may be unavailable on Linux
-    // (no X11 on Wayland, no tray host on GNOME without the AppIndicator extension).
-    let _hotkey = register_hotkey(&sender)
-        .inspect_err(|e| log::warn!("global hotkey {HOTKEY_LABEL} is unavailable: {e:#}"))
-        .ok();
-    let tray = create_tray(&sender)
+    let mut config = Config::load();
+
+    // Both may be unavailable on Linux: no global hotkeys on Wayland, no tray host on GNOME
+    // without the AppIndicator extension.
+    let mut hotkey = create_hotkey(&sender, &config);
+    let tray = create_tray(&sender, hotkey.as_ref().and_then(GlobalHotkey::current))
         .inspect_err(|e| log::warn!("tray icon is unavailable: {e:#}"))
         .ok();
 
-    log::info!("ready: press {HOTKEY_LABEL} or click the tray icon");
+    match hotkey.as_ref().and_then(GlobalHotkey::current) {
+        Some(shortcut) => log::info!("ready: press {shortcut} or click the tray icon"),
+        None => log::info!("ready: click the tray icon or run `ochco --capture`"),
+    }
 
     while let Some(event) = event_loop.next(&events) {
         match event {
@@ -79,11 +82,16 @@ pub fn run_tray(store: ModelStore, config: OcrConfig) {
                     Err(e) => log::error!("capture failed: {e:#}"),
                 }
 
-                // Capture requests that arrived while the overlay was open are stale.
-                let pending: Vec<_> = events.try_iter().collect();
-                for event in pending.into_iter().filter(|e| !matches!(e, AppEvent::Capture)) {
-                    sender.send(event);
+                drop_stale_requests(&events, &sender);
+            }
+            AppEvent::OpenSettings => {
+                open_settings(&mut config, hotkey.as_mut());
+
+                if let Some(tray) = &tray {
+                    tray.set_hotkey(hotkey.as_ref().and_then(GlobalHotkey::current));
                 }
+
+                drop_stale_requests(&events, &sender);
             }
         }
     }
@@ -118,28 +126,69 @@ fn capture_selection() -> Result<Option<RgbaImage>> {
     overlay::select_region(&shot)
 }
 
-fn register_hotkey(sender: &EventSender) -> Result<GlobalHotKeyManager> {
-    let manager = GlobalHotKeyManager::new().context("creating the hotkey manager")?;
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT);
-    manager.register(hotkey).context("registering the hotkey")?;
+/// Drops capture and settings requests that arrived while a window was open; keeps the rest.
+fn drop_stale_requests(events: &Receiver<AppEvent>, sender: &EventSender) {
+    let pending: Vec<_> = events.try_iter().collect();
 
-    let sender = sender.clone();
-    GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
-        if event.id == hotkey.id() && event.state == HotKeyState::Pressed {
-            sender.send(AppEvent::Capture);
+    for event in pending {
+        if !matches!(event, AppEvent::Capture | AppEvent::OpenSettings) {
+            sender.send(event);
         }
-    }));
-
-    Ok(manager)
+    }
 }
 
-fn create_tray(sender: &EventSender) -> Result<Tray> {
+fn create_hotkey(sender: &EventSender, config: &Config) -> Option<GlobalHotkey> {
+    let sender = sender.clone();
+    let mut hotkey = GlobalHotkey::new(move || sender.send(AppEvent::Capture))
+        .inspect_err(|e| log::warn!("global hotkeys are unavailable: {e:#}"))
+        .ok()?;
+
+    if let Err(e) = hotkey.register(config.hotkey) {
+        log::warn!("{e:#}; choose another hotkey in the settings");
+    }
+
+    Some(hotkey)
+}
+
+fn create_tray(sender: &EventSender, hotkey: Option<Shortcut>) -> Result<Tray> {
     let sender = sender.clone();
 
-    Tray::new(HOTKEY_LABEL, move |action| {
+    Tray::new(hotkey, move |action| {
         sender.send(match action {
             TrayAction::Capture => AppEvent::Capture,
+            TrayAction::OpenSettings => AppEvent::OpenSettings,
             TrayAction::Quit => AppEvent::Quit,
         });
     })
+}
+
+/// Shows the settings window. Every recorded hotkey is checked and saved right away, and
+/// becomes active once the window closes.
+fn open_settings(config: &mut Config, mut hotkey: Option<&mut GlobalHotkey>) {
+    // An active hotkey would start a capture instead of being recorded.
+    if let Some(hotkey) = hotkey.as_mut() {
+        hotkey.unregister();
+    }
+
+    let current = config.hotkey;
+    let result = settings::edit_hotkey(current, &mut |candidate| {
+        // Registering proves that no other application holds the shortcut.
+        if let Some(hotkey) = hotkey.as_mut() {
+            hotkey.register(candidate)?;
+            hotkey.unregister();
+        }
+
+        config.hotkey = candidate;
+        config.save()
+    });
+
+    if let Err(e) = result {
+        log::error!("{e:#}");
+    }
+
+    if let Some(hotkey) = hotkey
+        && let Err(e) = hotkey.register(config.hotkey)
+    {
+        log::warn!("{e:#}");
+    }
 }

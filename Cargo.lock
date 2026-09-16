@@ -2971,6 +2971,8 @@ dependencies = [
  "libc",
  "log",
  "ort",
+ "serde",
+ "toml",
  "tray-icon",
  "windows-sys 0.61.2",
  "x11rb",

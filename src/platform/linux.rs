@@ -18,6 +18,14 @@ pub fn trim_working_set() {
     }
 }
 
+/// Directory for per-user settings (`$XDG_CONFIG_HOME`, or `~/.config`).
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
+}
+
 /// Cursor position in virtual-desktop pixels, if the display server exposes it.
 ///
 /// Wayland does not let clients query the global cursor position, and XWayland only knows it

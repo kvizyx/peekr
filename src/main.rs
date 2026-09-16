@@ -4,9 +4,14 @@ mod app;
 mod capture;
 mod cli;
 mod clipboard;
+mod config;
+mod hotkey;
+mod icon;
 mod ocr;
 mod overlay;
 mod platform;
+mod settings;
+mod shortcut;
 mod tray;
 mod worker;
 
