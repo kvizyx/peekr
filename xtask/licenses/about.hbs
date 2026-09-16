@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>ochco third-party licenses</title>
+    <style>
+        body { font-family: sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; }
+        pre { white-space: pre-wrap; background: #f4f4f4; padding: 1em; }
+        .license { border-top: 1px solid #ccc; margin-top: 2em; }
+    </style>
+</head>
+<body>
+    <h1>Third-party licenses</h1>
+    <p>
+        ochco is built from the Rust crates listed below. ONNX Runtime and the PaddleOCR models have
+        their own license files next to this one and in the <code>models</code> directory.
+    </p>
+
+    <h2>Overview</h2>
+    <ul>
+        {{#each overview}}
+        <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+        {{/each}}
+    </ul>
+
+    <h2>License texts</h2>
+    {{#each licenses}}
+    <div class="license">
+        <h3 id="{{id}}">{{name}}</h3>
+        <p>Used by:</p>
+        <ul>
+            {{#each used_by}}
+            <li>{{crate.name}} {{crate.version}}</li>
+            {{/each}}
+        </ul>
+        <pre>{{text}}</pre>
+    </div>
+    {{/each}}
+</body>
+</html>

@@ -1,0 +1,24 @@
+# cargo-about configuration: collects the licenses of all Rust dependencies into
+# THIRD-PARTY-LICENSES.html for release archives (used by `cargo xtask dist`).
+
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Licenses we are fine to ship under. A dependency with any other license fails the release build.
+accepted = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]

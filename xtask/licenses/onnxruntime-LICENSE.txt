@@ -1,6 +1,8 @@
+ONNX Runtime (https://github.com/microsoft/onnxruntime) is statically linked into ochco.
+
 MIT License
 
-Copyright (c) 2026 Ochco
+Copyright (c) Microsoft Corporation
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

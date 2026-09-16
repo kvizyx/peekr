@@ -1,0 +1,107 @@
+name: Release
+
+# Push a tag matching the crate version (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to build
+# the archives for every platform and attach them to a draft GitHub release.
+#
+# Run the workflow manually (Actions > Release > Run workflow) to only build the archives: they are
+# kept as artifacts of the run, and no release is created.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      matrix:
+        include:
+          - platform: windows-x86_64
+            os: windows-latest
+          # The prebuilt ONNX Runtime links against glibc 2.38 symbols, so Ubuntu 24.04 is the
+          # oldest usable runner (and the minimum for users).
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+          - platform: linux-aarch64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that the tag matches the crate version
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libclang-dev libpipewire-0.3-dev libxcb1-dev libxcb-randr0-dev \
+            libegl-dev libgbm-dev libwayland-dev
+
+      # Installs the toolchain and components pinned in rust-toolchain.toml.
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      - name: Restore models
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: models-${{ hashFiles('xtask/src/models.rs') }}
+
+      - name: Download models
+        run: cargo xtask models
+
+      - name: Build the archive
+        run: cargo xtask dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ochco-${{ matrix.platform }}
+          path: |
+            target/dist/*.zip
+            target/dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "ochco ${GITHUB_REF_NAME#v}" \
+            --generate-notes

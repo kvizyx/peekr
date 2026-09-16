@@ -87,5 +87,5 @@ fn models_dir() -> Result<PathBuf> {
         .chain(project_dir)
         .map(|dir| dir.join("models"))
         .find(|dir| dir.join("det").is_dir() && dir.join("rec").is_dir())
-        .context("models directory not found; run scripts/download_models.py")
+        .context("models directory not found; run `cargo xtask models`")
 }

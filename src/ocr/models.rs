@@ -1,7 +1,7 @@
 //! Catalog of supported models and the configuration that picks between them.
 //!
 //! Models live in `<root>/det/<id>/model.onnx` and `<root>/rec/<id>/model.onnx` (+ `dict.txt`),
-//! as laid out by `scripts/download_models.py`.
+//! as laid out by `cargo xtask models`.
 
 use std::path::{Path, PathBuf};
 
