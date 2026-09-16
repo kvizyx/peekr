@@ -1,0 +1,2 @@
+# Proper nouns that are not code identifiers ("..." keeps clippy's defaults).
+doc-valid-idents = ["PaddleOCR", "PaddlePaddle", "..."]

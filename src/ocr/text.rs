@@ -1,11 +1,64 @@
-//! Text post-processing.
+//! Turning recognized boxes into plain text.
+
+use super::TextLine;
+use super::geometry::BoundingBox;
+
+/// Minimal vertical overlap of two boxes on the same row, relative to the shorter one.
+const MIN_ROW_OVERLAP: f32 = 0.5;
 
 /// Letters that look identical in Latin and Cyrillic: (latin, cyrillic).
+#[rustfmt::skip]
 const HOMOGLYPHS: &[(char, char)] = &[
     ('A', 'А'), ('B', 'В'), ('C', 'С'), ('E', 'Е'), ('H', 'Н'), ('K', 'К'), ('M', 'М'),
     ('O', 'О'), ('P', 'Р'), ('T', 'Т'), ('X', 'Х'), ('Y', 'У'),
     ('a', 'а'), ('c', 'с'), ('e', 'е'), ('o', 'о'), ('p', 'р'), ('x', 'х'), ('y', 'у'),
 ];
+
+/// Joins recognized boxes into text in reading order: boxes on the same row are separated
+/// by spaces, rows by newlines.
+pub fn assemble_text(lines: &[TextLine]) -> String {
+    struct Row<'a> {
+        bounds: BoundingBox,
+        items: Vec<(&'a TextLine, BoundingBox)>,
+    }
+
+    let mut boxes: Vec<(&TextLine, BoundingBox)> = lines
+        .iter()
+        .map(|line| (line, BoundingBox::of_quad(&line.quad)))
+        .collect();
+    boxes.sort_by(|a, b| a.1.min.y.total_cmp(&b.1.min.y));
+
+    let mut rows: Vec<Row> = Vec::new();
+
+    for (line, bounds) in boxes {
+        let same_row = rows.last_mut().filter(|row| {
+            let shorter = bounds.height().min(row.bounds.height());
+            row.bounds.vertical_overlap(&bounds) >= MIN_ROW_OVERLAP * shorter
+        });
+
+        match same_row {
+            Some(row) => {
+                row.bounds.min.y = row.bounds.min.y.min(bounds.min.y);
+                row.bounds.max.y = row.bounds.max.y.max(bounds.max.y);
+                row.items.push((line, bounds));
+            }
+            None => rows.push(Row {
+                bounds,
+                items: vec![(line, bounds)],
+            }),
+        }
+    }
+
+    rows.into_iter()
+        .map(|mut row| {
+            row.items.sort_by(|a, b| a.1.min.x.total_cmp(&b.1.min.x));
+            let words: Vec<&str> = row.items.iter().map(|(line, _)| line.text.as_str()).collect();
+
+            fix_mixed_scripts(&words.join(" "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Script {
@@ -14,7 +67,7 @@ enum Script {
 }
 
 fn is_ambiguous(c: char) -> bool {
-    HOMOGLYPHS.iter().any(|&(l, k)| c == l || c == k)
+    HOMOGLYPHS.iter().any(|&(latin, cyrillic)| c == latin || c == cyrillic)
 }
 
 fn script_of(c: char) -> Option<Script> {
@@ -28,44 +81,44 @@ fn script_of(c: char) -> Option<Script> {
 /// The script of a word judged only by letters that exist in one alphabet.
 fn dominant_script(word: &str) -> Option<Script> {
     let (mut latin, mut cyrillic) = (0, 0);
-    for c in word.chars().filter(|&c| !is_ambiguous(c)) {
-        match script_of(c) {
-            Some(Script::Latin) => latin += 1,
-            Some(Script::Cyrillic) => cyrillic += 1,
-            None => {}
+
+    for script in word.chars().filter(|&c| !is_ambiguous(c)).filter_map(script_of) {
+        match script {
+            Script::Latin => latin += 1,
+            Script::Cyrillic => cyrillic += 1,
         }
     }
-    match (latin, cyrillic) {
-        (0, 0) => None,
-        (l, k) if l > k => Some(Script::Latin),
-        (l, k) if k > l => Some(Script::Cyrillic),
-        _ => None,
+
+    match latin.cmp(&cyrillic) {
+        std::cmp::Ordering::Greater => Some(Script::Latin),
+        std::cmp::Ordering::Less => Some(Script::Cyrillic),
+        std::cmp::Ordering::Equal => None,
     }
 }
 
 fn convert(word: &str, to: Script) -> String {
-    word.chars()
-        .map(|c| {
-            HOMOGLYPHS
-                .iter()
-                .find_map(|&(l, k)| match to {
-                    Script::Latin if c == k => Some(l),
-                    Script::Cyrillic if c == l => Some(k),
-                    _ => None,
-                })
-                .unwrap_or(c)
+    let swap = |c: char| {
+        HOMOGLYPHS.iter().find_map(|&(latin, cyrillic)| match to {
+            Script::Latin if c == cyrillic => Some(latin),
+            Script::Cyrillic if c == latin => Some(cyrillic),
+            _ => None,
         })
-        .collect()
+    };
+
+    word.chars().map(|c| swap(c).unwrap_or(c)).collect()
 }
 
 /// Fixes words mixing Latin and Cyrillic look-alike letters ("сhanges" -> "changes").
 /// Words consisting only of look-alikes follow the line, if all other words share one script.
-pub fn fix_mixed_scripts(line: &str) -> String {
-    let words: Vec<&str> = line.split(' ').collect();
+/// Also collapses repeated spaces.
+fn fix_mixed_scripts(line: &str) -> String {
+    let words: Vec<&str> = line.split(' ').filter(|w| !w.is_empty()).collect();
     let scripts: Vec<Option<Script>> = words.iter().map(|w| dominant_script(w)).collect();
-    let latin = scripts.contains(&Some(Script::Latin));
-    let cyrillic = scripts.contains(&Some(Script::Cyrillic));
-    let line_script = match (latin, cyrillic) {
+
+    let line_script = match (
+        scripts.contains(&Some(Script::Latin)),
+        scripts.contains(&Some(Script::Cyrillic)),
+    ) {
         (true, false) => Some(Script::Latin),
         (false, true) => Some(Script::Cyrillic),
         _ => None,
@@ -75,21 +128,50 @@ pub fn fix_mixed_scripts(line: &str) -> String {
         .iter()
         .zip(scripts)
         .map(|(word, script)| match script.or(line_script) {
-            Some(s) => convert(word, s),
-            None => word.to_string(),
+            Some(script) => convert(word, script),
+            None => (*word).to_owned(),
         })
-        .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::geometry::Point;
     use super::*;
+
+    fn line(text: &str, x: f32, y: f32) -> TextLine {
+        let (w, h) = (50.0, 20.0);
+        let quad = [
+            Point::new(x, y),
+            Point::new(x + w, y),
+            Point::new(x + w, y + h),
+            Point::new(x, y + h),
+        ];
+
+        TextLine {
+            text: text.to_owned(),
+            quad,
+        }
+    }
+
+    #[test]
+    fn assembles_rows_in_reading_order() {
+        let lines = [
+            line("world", 60.0, 2.0),
+            line("second", 0.0, 40.0),
+            line("hello", 0.0, 0.0),
+        ];
+
+        assert_eq!(assemble_text(&lines), "hello world\nsecond");
+    }
 
     #[test]
     fn fixes_cyrillic_letters_in_english_words() {
-        assert_eq!(fix_mixed_scripts("Save сhanges before сlosing?"), "Save changes before closing?");
+        assert_eq!(
+            fix_mixed_scripts("Save сhanges before сlosing?"),
+            "Save changes before closing?"
+        );
     }
 
     #[test]
@@ -105,6 +187,13 @@ mod tests {
 
     #[test]
     fn keeps_mixed_lines_intact() {
-        assert_eq!(fix_mixed_scripts("Цена: 1 299,00 Р email: test@example.com"), "Цена: 1 299,00 Р email: test@example.com");
+        let line = "Цена: 1 299,00 Р email: test@example.com";
+
+        assert_eq!(fix_mixed_scripts(line), line);
+    }
+
+    #[test]
+    fn collapses_repeated_spaces() {
+        assert_eq!(fix_mixed_scripts("идея,  сказал"), "идея, сказал");
     }
 }

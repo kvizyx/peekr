@@ -8,7 +8,8 @@ use imageproc::contours::{BorderType, find_contours};
 use ort::session::Session;
 use ort::value::TensorRef;
 
-use super::geometry::{Point, Quad, min_area_rect};
+use super::geometry::{self, BoundingBox, Point, Quad};
+use super::preprocess::to_bgr_chw;
 
 /// Pixels of the probability map above this value are considered text.
 const BIN_THRESHOLD: f32 = 0.3;
@@ -21,8 +22,10 @@ const MAX_CANDIDATES: usize = 1000;
 
 /// Images whose shorter side is smaller than this are upscaled before detection.
 /// Screen text is rendered crisp, so larger upscaling only costs time without improving results.
-const MIN_SIDE: u32 = 128;
-const MAX_SIDE: u32 = 2048;
+const MIN_SIDE: f32 = 128.0;
+const MAX_SIDE: f32 = 2048.0;
+/// The model downsamples by 32, so input sides must be multiples of it.
+const SIDE_MULTIPLE: f32 = 32.0;
 
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
@@ -33,120 +36,191 @@ pub struct Detector {
 
 impl Detector {
     pub fn load(path: &Path) -> Result<Self> {
-        let session = super::load_session(path)
-            .with_context(|| format!("loading detection model {}", path.display()))?;
+        let session =
+            super::load_session(path).with_context(|| format!("loading detection model {}", path.display()))?;
+
         Ok(Self { session })
     }
 
     /// Returns text boxes in `img` coordinates.
     pub fn detect(&mut self, img: &RgbImage) -> Result<Vec<Quad>> {
         let (w, h) = img.dimensions();
-        let (rw, rh) = detection_size(w, h);
-        let resized = imageops::resize(img, rw, rh, imageops::FilterType::Triangle);
+        let (input_w, input_h) = input_size(w, h);
+        let resized = imageops::resize(img, input_w, input_h, imageops::FilterType::Triangle);
 
         let input = to_bgr_chw(&resized, |c, v| (v / 255.0 - MEAN[c]) / STD[c]);
-        let shape = [1usize, 3, rh as usize, rw as usize];
-        let outputs = self.session.run(ort::inputs![TensorRef::from_array_view((shape, &*input))?])?;
-        let (out_shape, pred) = outputs[0].try_extract_tensor::<f32>()?;
-        let (mh, mw) = (out_shape[2] as u32, out_shape[3] as u32);
+        let shape = [1, 3, input_h as usize, input_w as usize];
+        let outputs = self
+            .session
+            .run(ort::inputs![TensorRef::from_array_view((shape, input.as_slice()))?])?;
 
-        let quads = boxes_from_map(pred, mw, mh);
-        let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
-        Ok(quads
+        let (map_shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
+        let map = ProbabilityMap {
+            data: probabilities,
+            width: map_shape[3] as u32,
+            height: map_shape[2] as u32,
+        };
+
+        let (sx, sy) = (w as f32 / map.width as f32, h as f32 / map.height as f32);
+        let quads = map
+            .text_boxes()
             .into_iter()
-            .map(|q| q.map(|p| Point::new(p.x * sx, p.y * sy)))
-            .collect())
-    }
-}
-
-/// Picks a model input size: both sides are multiples of 32, small images are upscaled.
-fn detection_size(w: u32, h: u32) -> (u32, u32) {
-    let (w, h) = (w as f32, h as f32);
-    let mut ratio = 1.0f32;
-    if w.min(h) < MIN_SIDE as f32 {
-        ratio = MIN_SIDE as f32 / w.min(h);
-    }
-    if w.max(h) * ratio > MAX_SIDE as f32 {
-        ratio = MAX_SIDE as f32 / w.max(h);
-    }
-    let round32 = |v: f32| (((v * ratio) / 32.0).round() as u32).max(1) * 32;
-    (round32(w), round32(h))
-}
-
-/// Converts an RGB image into a planar BGR float tensor (PaddleOCR models are trained on BGR).
-pub(super) fn to_bgr_chw(img: &RgbImage, normalize: impl Fn(usize, f32) -> f32) -> Vec<f32> {
-    let (w, h) = img.dimensions();
-    let plane = (w * h) as usize;
-    let mut data = vec![0f32; plane * 3];
-    for (i, px) in img.pixels().enumerate() {
-        // Output channel 0 is blue, 2 is red; normalization constants follow the output order.
-        data[i] = normalize(0, px[2] as f32);
-        data[plane + i] = normalize(1, px[1] as f32);
-        data[2 * plane + i] = normalize(2, px[0] as f32);
-    }
-    data
-}
-
-fn boxes_from_map(pred: &[f32], w: u32, h: u32) -> Vec<Quad> {
-    let is_text = |x: u32, y: u32| pred[(y * w + x) as usize] > BIN_THRESHOLD;
-    // Binarize with a 2x2 dilation: merges characters separated by thin gaps into one line.
-    let bitmap = GrayImage::from_fn(w, h, |x, y| {
-        let hit = is_text(x, y)
-            || (x > 0 && is_text(x - 1, y))
-            || (y > 0 && is_text(x, y - 1))
-            || (x > 0 && y > 0 && is_text(x - 1, y - 1));
-        Luma([if hit { 255 } else { 0 }])
-    });
-
-    let mut quads = Vec::new();
-    for contour in find_contours::<i32>(&bitmap)
-        .into_iter()
-        .filter(|c| c.border_type == BorderType::Outer)
-        .take(MAX_CANDIDATES)
-    {
-        let points: Vec<Point> = contour
-            .points
-            .iter()
-            .map(|p| Point::new(p.x as f32, p.y as f32))
+            .map(|quad| quad.map(|p| Point::new(p.x * sx, p.y * sy)))
             .collect();
-        let rect = min_area_rect(&points);
-        if rect.width.min(rect.height) < MIN_BOX_SIDE {
-            continue;
-        }
-        if box_score(pred, w, h, &rect.corners()) < BOX_THRESHOLD {
-            continue;
-        }
 
-        // Unclipping a rectangle by distance d grows each side by 2d (the rounded corners
-        // produced by polygon offsetting do not change its minimum area rectangle).
-        let d = rect.width * rect.height * UNCLIP_RATIO / (2.0 * (rect.width + rect.height));
-        let grown = rect.grow(d);
-        if grown.width.min(grown.height) < MIN_BOX_SIDE + 2.0 {
-            continue;
-        }
-        let quad = grown.corners().map(|p| {
-            Point::new(p.x.clamp(0.0, w as f32), p.y.clamp(0.0, h as f32))
-        });
-        quads.push(super::geometry::order_quad(quad));
+        Ok(quads)
     }
-    quads
 }
 
-/// Mean probability inside the quad.
-fn box_score(pred: &[f32], w: u32, h: u32, quad: &Quad) -> f32 {
-    let min_x = quad.iter().map(|p| p.x).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
-    let max_x = quad.iter().map(|p| p.x).fold(f32::MIN, f32::max).ceil().min((w - 1) as f32) as u32;
-    let min_y = quad.iter().map(|p| p.y).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
-    let max_y = quad.iter().map(|p| p.y).fold(f32::MIN, f32::max).ceil().min((h - 1) as f32) as u32;
+/// Picks the model input size: small images are upscaled, huge ones downscaled.
+fn input_size(w: u32, h: u32) -> (u32, u32) {
+    let (w, h) = (w as f32, h as f32);
 
-    let (mut sum, mut count) = (0f32, 0u32);
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            if super::geometry::quad_contains(quad, Point::new(x as f32, y as f32)) {
-                sum += pred[(y * w + x) as usize];
-                count += 1;
+    let mut ratio = 1.0;
+    if w.min(h) < MIN_SIDE {
+        ratio = MIN_SIDE / w.min(h);
+    }
+    if w.max(h) * ratio > MAX_SIDE {
+        ratio = MAX_SIDE / w.max(h);
+    }
+
+    let round = |side: f32| ((side * ratio / SIDE_MULTIPLE).round().max(1.0) * SIDE_MULTIPLE) as u32;
+    (round(w), round(h))
+}
+
+/// Per-pixel text probability produced by the detection model.
+struct ProbabilityMap<'a> {
+    data: &'a [f32],
+    width: u32,
+    height: u32,
+}
+
+impl ProbabilityMap<'_> {
+    fn at(&self, x: u32, y: u32) -> f32 {
+        self.data[(y * self.width + x) as usize]
+    }
+
+    /// DB post-processing: binarize, trace contours, fit and expand rectangles.
+    fn text_boxes(&self) -> Vec<Quad> {
+        let mut quads = Vec::new();
+
+        let contours = find_contours::<i32>(&self.binarize())
+            .into_iter()
+            .filter(|c| c.border_type == BorderType::Outer)
+            .take(MAX_CANDIDATES);
+
+        for contour in contours {
+            let points: Vec<Point> = contour
+                .points
+                .iter()
+                .map(|p| Point::new(p.x as f32, p.y as f32))
+                .collect();
+
+            let Some(rect) = geometry::min_area_rect(&points) else {
+                continue;
+            };
+
+            if rect.width.min(rect.height) < MIN_BOX_SIDE || self.mean_inside(&rect.corners()) < BOX_THRESHOLD {
+                continue;
+            }
+
+            // The model predicts shrunk text kernels. Unclipping a rectangle by distance d grows each
+            // side by 2d (the rounded corners of polygon offsetting do not change its bounding rectangle).
+            let distance = rect.width * rect.height * UNCLIP_RATIO / (2.0 * (rect.width + rect.height));
+            let grown = rect.grow(distance);
+            if grown.width.min(grown.height) < MIN_BOX_SIDE + 2.0 {
+                continue;
+            }
+
+            let (max_x, max_y) = (self.width as f32, self.height as f32);
+            let quad = grown
+                .corners()
+                .map(|p| Point::new(p.x.clamp(0.0, max_x), p.y.clamp(0.0, max_y)));
+            quads.push(geometry::order_quad(quad));
+        }
+
+        quads
+    }
+
+    /// Thresholds the map with a 2x2 dilation, which joins characters separated by thin gaps.
+    fn binarize(&self) -> GrayImage {
+        let is_text = |x: u32, y: u32| self.at(x, y) > BIN_THRESHOLD;
+
+        GrayImage::from_fn(self.width, self.height, |x, y| {
+            let hit = is_text(x, y)
+                || (x > 0 && is_text(x - 1, y))
+                || (y > 0 && is_text(x, y - 1))
+                || (x > 0 && y > 0 && is_text(x - 1, y - 1));
+
+            Luma([if hit { 255 } else { 0 }])
+        })
+    }
+
+    /// Mean probability of the pixels inside the quad.
+    fn mean_inside(&self, quad: &Quad) -> f32 {
+        let bounds = BoundingBox::of_quad(quad);
+        let x_range = pixel_range(bounds.min.x, bounds.max.x, self.width);
+        let y_range = pixel_range(bounds.min.y, bounds.max.y, self.height);
+
+        let (mut sum, mut count) = (0.0, 0u32);
+        for y in y_range {
+            for x in x_range.clone() {
+                if geometry::quad_contains(quad, Point::new(x as f32, y as f32)) {
+                    sum += self.at(x, y);
+                    count += 1;
+                }
             }
         }
+
+        if count == 0 { 0.0 } else { sum / count as f32 }
     }
-    if count == 0 { 0.0 } else { sum / count as f32 }
+}
+
+/// Pixel indices covering `min..=max`, clamped to `0..len`.
+fn pixel_range(min: f32, max: f32, len: u32) -> std::ops::RangeInclusive<u32> {
+    let first = min.floor().max(0.0) as u32;
+    let last = max.ceil().min((len - 1) as f32) as u32;
+
+    first..=last
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_size_is_a_multiple_of_32() {
+        assert_eq!(input_size(1000, 300), (992, 288));
+    }
+
+    #[test]
+    fn small_images_are_upscaled_and_huge_ones_downscaled() {
+        assert_eq!(input_size(200, 40), (640, 128));
+        assert_eq!(input_size(8000, 1000), (2048, 256));
+    }
+
+    #[test]
+    fn finds_a_box_around_a_bright_blob() {
+        let (width, height) = (64, 32);
+        let data: Vec<f32> = (0..width * height)
+            .map(|i| {
+                if (8..24).contains(&(i / width)) && (10..50).contains(&(i % width)) {
+                    0.9
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        let map = ProbabilityMap {
+            data: &data,
+            width,
+            height,
+        };
+        let boxes = map.text_boxes();
+
+        assert_eq!(boxes.len(), 1);
+        let bounds = BoundingBox::of_quad(&boxes[0]);
+        assert!(bounds.min.x < 10.0 && bounds.max.x > 50.0, "{bounds:?}");
+    }
 }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Select a screen region and copy the recognized text"
 license = "MIT"
+rust-version = "1.95"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -31,3 +32,24 @@ windows-sys = { version = "0.61", features = [
 [profile.release]
 lto = "thin"
 strip = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Pixel and tensor math converts between integer and float types all over the place;
+# values are bounded by image sizes, so these would only add noise.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+
+# Selected restriction lints.
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
