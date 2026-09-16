@@ -27,7 +27,11 @@ const PADDING: u32 = 24;
 /// In auto mode, a reading at least this share as long as the longest one is not penalized.
 const COVERAGE_TOLERANCE: f32 = 0.9;
 /// In auto mode, a reading in a recognizer's exclusive script needs this confidence to be final.
-const DECISIVE_MIN_SCORE: f32 = 0.8;
+/// Stylized fonts (e.g. Impact in video thumbnails) score around 0.75, while a model never
+/// produced a real word in an alphabet the text is not written in, so the bar can be low.
+const DECISIVE_MIN_SCORE: f32 = 0.6;
+/// Single-symbol readings are often noise from picture edges, so they need more confidence.
+const MIN_SINGLE_SYMBOL_SCORE: f32 = 0.9;
 
 /// A recognized piece of text and where it was found.
 #[derive(Debug, Clone)]
@@ -72,7 +76,7 @@ impl OcrEngine {
             let crop = geometry::crop_quad(&img, &quad);
             let (text, score) = self.recognize_line(&crop)?;
 
-            if score >= MIN_LINE_SCORE && !text.is_empty() {
+            if is_plausible_line(&text, score) {
                 lines.push(TextLine { text, quad });
             }
         }
@@ -97,6 +101,15 @@ impl OcrEngine {
         }
 
         Ok(pick_best_reading(candidates).unwrap_or_default())
+    }
+}
+
+/// Filters out unconfident readings and likely noise.
+fn is_plausible_line(text: &str, score: f32) -> bool {
+    match text.chars().filter(|c| !c.is_whitespace()).count() {
+        0 => false,
+        1 => score >= MIN_SINGLE_SYMBOL_SCORE,
+        _ => score >= MIN_LINE_SCORE,
     }
 }
 
@@ -187,8 +200,17 @@ mod tests {
         let eslav = &models::RECOGNIZERS[0];
 
         assert!(is_decisive(eslav, "Сохранить изменения?", 0.95));
+        assert!(is_decisive(eslav, "CША?", 0.757));
         assert!(!is_decisive(eslav, "Сохранить изменения?", 0.5));
         assert!(!is_decisive(eslav, "Еrгог: 404", 0.95));
+    }
+
+    #[test]
+    fn single_symbols_need_high_confidence() {
+        assert!(!is_plausible_line("à", 0.71));
+        assert!(is_plausible_line("5", 0.95));
+        assert!(is_plausible_line("OK", 0.71));
+        assert!(!is_plausible_line("   ", 0.99));
     }
 
     #[test]

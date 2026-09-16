@@ -31,9 +31,11 @@ pub fn assemble_text(lines: &[TextLine]) -> String {
     let mut rows: Vec<Row> = Vec::new();
 
     for (line, bounds) in boxes {
+        // Measured against the taller box, so a tall box (e.g. a false detection on a picture)
+        // cannot pull several text lines into one row.
         let same_row = rows.last_mut().filter(|row| {
-            let shorter = bounds.height().min(row.bounds.height());
-            row.bounds.vertical_overlap(&bounds) >= MIN_ROW_OVERLAP * shorter
+            let taller = bounds.height().max(row.bounds.height());
+            row.bounds.vertical_overlap(&bounds) >= MIN_ROW_OVERLAP * taller
         });
 
         match same_row {
@@ -81,16 +83,17 @@ fn script_of(c: char) -> Option<Script> {
     }
 }
 
-/// Whether the text has a real word in `script`: at least [`MIN_PROOF_WORD_LEN`] letters, all of
-/// that script, including one without a look-alike in the other alphabet. Misreadings that mix
-/// scripts inside a word ("Еrгог") or consist only of look-alikes ("НОС") do not count.
+/// Whether the text has a real word in `script`: at least [`MIN_PROOF_WORD_LEN`] letters, each
+/// either of that script or a look-alike ("CША" with a Latin C counts), and at least one letter
+/// that exists only in `script`. Words with foreign letters that have no look-alike ("Еrгог")
+/// or made of look-alikes only ("НОС") do not count.
 pub fn contains_word_in(text: &str, script: Script) -> bool {
     text.split(|c: char| !c.is_alphabetic()).any(|word| {
         let letters = word.chars().count();
-        let all_in_script = word.chars().all(|c| script_of(c) == Some(script));
-        let has_distinct_letter = word.chars().any(|c| !is_ambiguous(c));
+        let compatible = word.chars().all(|c| is_ambiguous(c) || script_of(c) == Some(script));
+        let has_distinct_letter = word.chars().any(|c| !is_ambiguous(c) && script_of(c) == Some(script));
 
-        letters >= MIN_PROOF_WORD_LEN && all_in_script && has_distinct_letter
+        letters >= MIN_PROOF_WORD_LEN && compatible && has_distinct_letter
     })
 }
 
@@ -157,7 +160,11 @@ mod tests {
     use super::*;
 
     fn line(text: &str, x: f32, y: f32) -> TextLine {
-        let (w, h) = (50.0, 20.0);
+        sized_line(text, x, y, 20.0)
+    }
+
+    fn sized_line(text: &str, x: f32, y: f32, h: f32) -> TextLine {
+        let w = 50.0;
         let quad = [
             Point::new(x, y),
             Point::new(x + w, y),
@@ -183,9 +190,26 @@ mod tests {
     }
 
     #[test]
+    fn tall_box_does_not_merge_lines_into_one_row() {
+        let lines = [
+            sized_line("picture", 150.0, 0.0, 130.0),
+            line("КИТАЙ", 0.0, 10.0),
+            line("победит", 40.0, 55.0),
+            line("США?", 0.0, 85.0),
+        ];
+
+        assert_eq!(assemble_text(&lines), "picture\nКИТАЙ\nпобедит\nСША?");
+    }
+
+    #[test]
     fn finds_real_cyrillic_words() {
         assert!(contains_word_in("Сохранить изменения?", Script::Cyrillic));
         assert!(contains_word_in("ОК Отмена", Script::Cyrillic));
+    }
+
+    #[test]
+    fn accepts_latin_look_alikes_inside_cyrillic_words() {
+        assert!(contains_word_in("CША?", Script::Cyrillic));
     }
 
     #[test]
