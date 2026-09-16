@@ -40,8 +40,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-  check:
-    name: Lint and test (${{ matrix.os }})
+  # Platform code and dependencies differ per OS and architecture, and clippy only checks what
+  # compiles for the runner's target, so it runs on every platform we ship.
+  clippy:
+    name: Clippy (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -66,6 +68,26 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # The tests cover platform-independent logic so one platform is enough.
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libclang-dev libpipewire-0.3-dev libxcb1-dev libxcb-randr0-dev \
+            libegl-dev libgbm-dev libwayland-dev
+
+      # Installs the toolchain and components pinned in rust-toolchain.toml.
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Test
         run: cargo test --workspace --locked
