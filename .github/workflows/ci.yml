@@ -16,8 +16,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Formatting does not depend on the platform, so it runs once, without system libraries or a
+  # build cache, and reports within seconds.
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs the toolchain and components pinned in rust-toolchain.toml.
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
   check:
-    name: Check (${{ matrix.os }})
+    name: Lint and test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -39,10 +54,6 @@ jobs:
         run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Format
-        if: runner.os == 'Linux'
-        run: cargo fmt --all --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
