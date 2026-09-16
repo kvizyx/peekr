@@ -20,12 +20,14 @@ pub struct Recognizer {
 }
 
 impl Recognizer {
-    /// Loads `rec.onnx`; the dictionary comes from the model metadata or `dict.txt` next to it.
+    /// Loads the model; the dictionary comes from the model metadata or `dict.txt` next to it.
     pub fn load(model: &Path) -> Result<Self> {
         let session =
             super::load_session(model).with_context(|| format!("loading recognition model {}", model.display()))?;
 
-        let dict = if let Some(embedded) = session.metadata().ok().and_then(|m| m.custom("character")) {
+        // RapidOCR exports embed the dictionary; official PaddlePaddle exports leave the key empty.
+        let embedded = session.metadata().ok().and_then(|m| m.custom("character"));
+        let dict = if let Some(embedded) = embedded.filter(|chars| !chars.trim().is_empty()) {
             embedded
         } else {
             let path = model.with_file_name("dict.txt");

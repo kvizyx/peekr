@@ -9,14 +9,9 @@ use ort::session::Session;
 use ort::value::TensorRef;
 
 use super::geometry::{self, BoundingBox, Point, Quad};
+use super::models::DetectorParams;
 use super::preprocess::to_bgr_chw;
 
-/// Pixels of the probability map above this value are considered text.
-const BIN_THRESHOLD: f32 = 0.3;
-/// Boxes whose mean probability is below this are dropped.
-const BOX_THRESHOLD: f32 = 0.5;
-/// How much to expand a shrunk text kernel back to the full text box.
-const UNCLIP_RATIO: f32 = 1.6;
 const MIN_BOX_SIDE: f32 = 3.0;
 const MAX_CANDIDATES: usize = 1000;
 
@@ -32,14 +27,15 @@ const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 pub struct Detector {
     session: Session,
+    params: DetectorParams,
 }
 
 impl Detector {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(path: &Path, params: DetectorParams) -> Result<Self> {
         let session =
             super::load_session(path).with_context(|| format!("loading detection model {}", path.display()))?;
 
-        Ok(Self { session })
+        Ok(Self { session, params })
     }
 
     /// Returns text boxes in `img` coordinates.
@@ -57,6 +53,7 @@ impl Detector {
         let (map_shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
         let map = ProbabilityMap {
             data: probabilities,
+            params: self.params,
             width: map_shape[3] as u32,
             height: map_shape[2] as u32,
         };
@@ -91,6 +88,7 @@ fn input_size(w: u32, h: u32) -> (u32, u32) {
 /// Per-pixel text probability produced by the detection model.
 struct ProbabilityMap<'a> {
     data: &'a [f32],
+    params: DetectorParams,
     width: u32,
     height: u32,
 }
@@ -120,13 +118,16 @@ impl ProbabilityMap<'_> {
                 continue;
             };
 
-            if rect.width.min(rect.height) < MIN_BOX_SIDE || self.mean_inside(&rect.corners()) < BOX_THRESHOLD {
+            if rect.width.min(rect.height) < MIN_BOX_SIDE
+                || self.mean_inside(&rect.corners()) < self.params.box_threshold
+            {
                 continue;
             }
 
             // The model predicts shrunk text kernels. Unclipping a rectangle by distance d grows each
             // side by 2d (the rounded corners of polygon offsetting do not change its bounding rectangle).
-            let distance = rect.width * rect.height * UNCLIP_RATIO / (2.0 * (rect.width + rect.height));
+            let area = rect.width * rect.height;
+            let distance = area * self.params.unclip_ratio / (2.0 * (rect.width + rect.height));
             let grown = rect.grow(distance);
             if grown.width.min(grown.height) < MIN_BOX_SIDE + 2.0 {
                 continue;
@@ -142,15 +143,17 @@ impl ProbabilityMap<'_> {
         quads
     }
 
-    /// Thresholds the map with a 2x2 dilation, which joins characters separated by thin gaps.
+    /// Thresholds the map, optionally with a 2x2 dilation (see [`DetectorParams::dilate`]).
     fn binarize(&self) -> GrayImage {
-        let is_text = |x: u32, y: u32| self.at(x, y) > BIN_THRESHOLD;
+        let is_text = |x: u32, y: u32| self.at(x, y) > self.params.bin_threshold;
 
         GrayImage::from_fn(self.width, self.height, |x, y| {
-            let hit = is_text(x, y)
-                || (x > 0 && is_text(x - 1, y))
-                || (y > 0 && is_text(x, y - 1))
-                || (x > 0 && y > 0 && is_text(x - 1, y - 1));
+            let dilated = || {
+                (x > 0 && is_text(x - 1, y))
+                    || (y > 0 && is_text(x, y - 1))
+                    || (x > 0 && y > 0 && is_text(x - 1, y - 1))
+            };
+            let hit = is_text(x, y) || (self.params.dilate && dilated());
 
             Luma([if hit { 255 } else { 0 }])
         })
@@ -212,11 +215,14 @@ mod tests {
             })
             .collect();
 
+        let params = super::super::models::DETECTORS[0].params;
         let map = ProbabilityMap {
             data: &data,
+            params,
             width,
             height,
         };
+
         let boxes = map.text_boxes();
 
         assert_eq!(boxes.len(), 1);

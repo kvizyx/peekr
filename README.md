@@ -3,14 +3,16 @@
 Grab text from anywhere on your screen. Press a hotkey, drag over a video frame, an image or a
 non-selectable UI, and the recognized text lands in your clipboard.
 
-Recognition runs fully offline on [PP-OCRv5](https://github.com/PaddlePaddle/PaddleOCR) models via
-ONNX Runtime. Currently supports Russian, Ukrainian, Belarusian, Bulgarian and English.
+Recognition runs fully offline on [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) models
+(PP-OCRv6 and PP-OCRv5) via ONNX Runtime. Supported languages: Russian, Ukrainian, Belarusian,
+Bulgarian, English, Chinese, Japanese and 46 Latin-script languages (German, French, Spanish,
+Polish, Czech and more). The language is detected automatically.
 
 Windows only for now; macOS and Linux are planned.
 
 ## Getting started
 
-Download the models (~13 MB, into `./models`):
+Download the models (~42 MB, into `./models`):
 
 ```bash
 uv run scripts/download_models.py
@@ -32,6 +34,17 @@ To recognize an image file without the GUI:
 cargo run --release -- --image picture.png
 ```
 
+## Models
+
+Text detection uses one model for all languages; recognition models cover different scripts. By
+default ochco runs every installed recognizer and keeps the best reading of each line. You can pin
+the models instead:
+
+```bash
+cargo run --release -- --list-models
+cargo run --release -- --det pp-ocrv5-mobile --rec pp-ocrv5-eslav
+```
+
 ## Distribution
 
 Ship `ochco.exe` together with the `models/` directory next to it. ONNX Runtime is linked statically,
@@ -41,4 +54,4 @@ so no other files are needed.
 
 This project is licensed under the [MIT License](LICENSE).
 
-The PP-OCRv5 models are provided by PaddlePaddle under the Apache License 2.0.
+The PaddleOCR models are provided by PaddlePaddle under the Apache License 2.0.

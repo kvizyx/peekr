@@ -60,8 +60,11 @@ pub fn assemble_text(lines: &[TextLine]) -> String {
         .join("\n")
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Script {
+/// Minimal length of a word that proves which script a reading is in.
+const MIN_PROOF_WORD_LEN: usize = 3;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Script {
     Latin,
     Cyrillic,
 }
@@ -76,6 +79,19 @@ fn script_of(c: char) -> Option<Script> {
         '\u{0400}'..='\u{04FF}' => Some(Script::Cyrillic),
         _ => None,
     }
+}
+
+/// Whether the text has a real word in `script`: at least [`MIN_PROOF_WORD_LEN`] letters, all of
+/// that script, including one without a look-alike in the other alphabet. Misreadings that mix
+/// scripts inside a word ("Еrгог") or consist only of look-alikes ("НОС") do not count.
+pub fn contains_word_in(text: &str, script: Script) -> bool {
+    text.split(|c: char| !c.is_alphabetic()).any(|word| {
+        let letters = word.chars().count();
+        let all_in_script = word.chars().all(|c| script_of(c) == Some(script));
+        let has_distinct_letter = word.chars().any(|c| !is_ambiguous(c));
+
+        letters >= MIN_PROOF_WORD_LEN && all_in_script && has_distinct_letter
+    })
 }
 
 /// The script of a word judged only by letters that exist in one alphabet.
@@ -164,6 +180,19 @@ mod tests {
         ];
 
         assert_eq!(assemble_text(&lines), "hello world\nsecond");
+    }
+
+    #[test]
+    fn finds_real_cyrillic_words() {
+        assert!(contains_word_in("Сохранить изменения?", Script::Cyrillic));
+        assert!(contains_word_in("ОК Отмена", Script::Cyrillic));
+    }
+
+    #[test]
+    fn ignores_misreadings_and_look_alikes() {
+        assert!(!contains_word_in("Еrгог: 404", Script::Cyrillic));
+        assert!(!contains_word_in("НОС ОК", Script::Cyrillic));
+        assert!(!contains_word_in("Größe und Qualität", Script::Cyrillic));
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::time::Instant;
 use anyhow::Result;
 use image::RgbaImage;
 
-use crate::ocr::{self, ModelPaths, OcrEngine};
+use crate::ocr::models::{ModelStore, OcrConfig};
+use crate::ocr::{self, OcrEngine};
 use crate::platform::Waker;
 
 /// Characters of the recognized text shown in the tray tooltip.
@@ -19,7 +20,7 @@ pub struct OcrWorker {
 
 impl OcrWorker {
     /// Models are loaded on the worker thread so startup stays instant.
-    pub fn spawn(models: ModelPaths, waker: Waker) -> Self {
+    pub fn spawn(store: ModelStore, config: OcrConfig, waker: Waker) -> Self {
         let (jobs, job_rx) = channel::<RgbaImage>();
         let (status_tx, status) = channel();
 
@@ -30,7 +31,7 @@ impl OcrWorker {
                 waker.wake();
             };
 
-            let mut engine = match OcrEngine::load(&models) {
+            let mut engine = match OcrEngine::load(&store, &config) {
                 Ok(engine) => engine,
                 Err(e) => {
                     log::error!("failed to load OCR models: {e:#}");
