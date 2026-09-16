@@ -8,15 +8,17 @@ rust-version = "1.95"
 
 [dependencies]
 anyhow = "1.0.104"
-arboard = "3.6"
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 env_logger = "0.11.11"
 global-hotkey = "0.8"
 image = { version = "0.25", default-features = false, features = ["png"] }
 imageproc = { version = "0.27", default-features = false }
 log = "0.4.34"
-ort = "2.0.0-rc.13"
-tray-icon = "0.25"
+# rustls instead of the default native-tls, so building on Linux does not need OpenSSL headers.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-rustls", "api-27"] }
+# ksni talks to the tray over D-Bus on Linux instead of pulling in GTK.
+tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
 xcap = "0.9"
 
 [target.'cfg(windows)'.dependencies]
@@ -29,6 +31,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+x11rb = "0.13"
 
 [profile.release]
 lto = "thin"

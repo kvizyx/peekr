@@ -1,4 +1,5 @@
 use std::ptr::null_mut;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 use windows_sys::Win32::Foundation::{LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -32,17 +33,17 @@ pub fn trim_working_set() {
 }
 
 /// Cursor position in physical virtual-desktop coordinates.
-pub fn cursor_position() -> (i32, i32) {
+pub fn cursor_position() -> Option<(i32, i32)> {
     let mut point = POINT { x: 0, y: 0 };
 
     // SAFETY: `point` is a valid, writable POINT for the duration of the call.
-    unsafe { GetCursorPos(&raw mut point) };
+    let ok = unsafe { GetCursorPos(&raw mut point) };
 
-    (point.x, point.y)
+    (ok != 0).then_some((point.x, point.y))
 }
 
-/// Index of the monitor containing the point, in the same order winit enumerates monitors.
-pub fn monitor_index_at(x: i32, y: i32) -> Option<usize> {
+/// Index of the monitor in the order winit enumerates monitors.
+pub fn monitor_index(monitor: &xcap::Monitor) -> Option<usize> {
     /// `EnumDisplayMonitors` callback; `data` points to the `Vec<HMONITOR>` being filled.
     unsafe extern "system" fn collect(monitor: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> i32 {
         // SAFETY: `data` is the `&mut Vec` passed below, alive for the whole enumeration.
@@ -58,25 +59,63 @@ pub fn monitor_index_at(x: i32, y: i32) -> Option<usize> {
         EnumDisplayMonitors(null_mut(), null_mut(), Some(collect), (&raw mut monitors) as LPARAM);
     }
 
+    // The top-left pixel identifies the monitor.
+    let corner = POINT {
+        x: monitor.x().ok()?,
+        y: monitor.y().ok()?,
+    };
+
     // SAFETY: no pointers involved.
-    let target = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
+    let target = unsafe { MonitorFromPoint(corner, MONITOR_DEFAULTTONEAREST) };
 
     monitors.iter().position(|&m| m == target)
 }
 
-/// Wakes up [`pump_message`] on the given thread from another thread.
-#[derive(Clone, Copy)]
+/// Blocks the main thread until the app has an event to handle, pumping the Win32 messages that
+/// drive the tray icon and the global hotkey meanwhile.
+pub struct EventLoop {
+    thread_id: u32,
+}
+
+impl EventLoop {
+    /// Must be created on the thread that owns the tray icon and the hotkey manager.
+    pub fn new() -> Self {
+        // SAFETY: no pointers involved.
+        let thread_id = unsafe { GetCurrentThreadId() };
+
+        Self { thread_id }
+    }
+
+    pub fn waker(&self) -> Waker {
+        Waker {
+            thread_id: self.thread_id,
+        }
+    }
+
+    /// Returns the next event, or `None` when the channel is closed or `WM_QUIT` arrives.
+    #[expect(clippy::unused_self, reason = "same API as the Linux event loop")]
+    pub fn next<T>(&self, events: &Receiver<T>) -> Option<T> {
+        loop {
+            match events.try_recv() {
+                Ok(event) => return Some(event),
+                Err(TryRecvError::Disconnected) => return None,
+                Err(TryRecvError::Empty) => {}
+            }
+
+            if !pump_message() {
+                return None;
+            }
+        }
+    }
+}
+
+/// Wakes up [`EventLoop::next`] after an event was sent from another thread.
+#[derive(Debug, Clone, Copy)]
 pub struct Waker {
     thread_id: u32,
 }
 
 impl Waker {
-    pub fn for_current_thread() -> Self {
-        // SAFETY: no pointers involved.
-        let thread_id = unsafe { GetCurrentThreadId() };
-        Self { thread_id }
-    }
-
     pub fn wake(self) {
         // SAFETY: no pointers involved; posting to a finished thread just fails.
         unsafe { PostThreadMessageW(self.thread_id, WM_APP, 0, 0) };
@@ -85,7 +124,7 @@ impl Waker {
 
 /// Blocks until a message arrives on this thread and dispatches it.
 /// Tray and hotkey callbacks run from here. Returns `false` on `WM_QUIT`.
-pub fn pump_message() -> bool {
+fn pump_message() -> bool {
     // SAFETY: MSG is a plain C struct; all-zero bytes are a valid value.
     let mut msg: MSG = unsafe { std::mem::zeroed() };
 

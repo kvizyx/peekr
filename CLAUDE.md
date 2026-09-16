@@ -25,6 +25,14 @@ Clippy runs with `pedantic` plus a few restriction lints (see `[lints]` in `Carg
 report no issues. When touching the OCR pipeline, also compare `cargo run --release -- --image <png>`
 output before and after the change.
 
+The app targets Windows and Linux. When changing platform code, shared app code or dependencies,
+also run the checks for Linux in WSL (Ubuntu, build dependencies are listed in the README); keep the
+target directory inside WSL, building into `/mnt/d` is slow:
+
+```bash
+wsl -d Ubuntu -- bash -lc "cd /mnt/d/Projects/ochko && export CARGO_TARGET_DIR=~/.cache/ochco-target && cargo clippy --all-targets && cargo test"
+```
+
 ## Rust conventions
 
 - **Readability.** Separate logical steps inside a function with blank lines (setup, main work,
@@ -37,6 +45,9 @@ output before and after the change.
   explaining what they control.
 - **Errors.** Return `anyhow::Result` and add context with `.context()` / `.with_context()`.
   No `unwrap()` outside tests; `expect()` only for invariants, with a message saying why it holds.
+- **Platforms.** OS-specific code lives in `src/platform/<os>.rs`, and every module exposes the
+  same API (see `src/platform/mod.rs`). The rest of the code has no `cfg(target_os)` except for
+  small differences in behavior.
 - **Unsafe.** Only in `src/platform/`. Every `unsafe` block gets a `// SAFETY:` comment.
 - **Lints.** Fix warnings instead of silencing them. If an exception is justified, use
   `#[expect(lint, reason = "...")]` on the smallest possible item, never a crate-wide `allow`.

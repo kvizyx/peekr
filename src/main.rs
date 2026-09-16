@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app;
 mod capture;
 mod cli;
+mod clipboard;
 mod ocr;
 mod overlay;
 mod platform;
@@ -12,15 +14,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-use crate::cli::Args;
+use crate::cli::{Args, Command};
 use crate::ocr::models::{ModelStore, OcrConfig};
-use crate::tray::{Tray, TrayAction};
-use crate::worker::OcrWorker;
-
-const HOTKEY_LABEL: &str = "Ctrl+Alt+T";
 
 fn main() -> Result<()> {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,72 +30,18 @@ fn main() -> Result<()> {
     let args = Args::parse(raw_args)?;
     let store = ModelStore::new(models_dir()?);
 
-    if args.list_models {
-        print_models(&store);
-        return Ok(());
-    }
-
-    match &args.image {
-        Some(path) => recognize_file(path, &store, &args.ocr),
-        None => run_tray_app(store, args.ocr),
-    }
-}
-
-fn run_tray_app(store: ModelStore, config: OcrConfig) -> Result<()> {
-    let worker = OcrWorker::spawn(store, config, platform::Waker::for_current_thread());
-
-    // The hotkey manager and the tray icon must live on the thread that pumps messages.
-    let hotkeys = GlobalHotKeyManager::new()?;
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT);
-    if let Err(e) = hotkeys.register(hotkey) {
-        log::error!("failed to register {HOTKEY_LABEL}: {e}; use the tray icon instead");
-    }
-
-    let tray = Tray::new(HOTKEY_LABEL)?;
-    log::info!("ready: press {HOTKEY_LABEL} or click the tray icon");
-
-    while platform::pump_message() {
-        let mut capture = drain_hotkey_presses(hotkey);
-
-        match tray.poll() {
-            Some(TrayAction::Quit) => break,
-            Some(TrayAction::Capture) => capture = true,
-            None => {}
+    match args.command {
+        Command::Tray => {
+            app::run_tray(store, args.ocr);
+            Ok(())
         }
-
-        while let Some(status) = worker.poll_status() {
-            tray.set_status(&status);
-        }
-
-        if capture {
-            worker.prepare();
-
-            match capture_selection() {
-                Ok(Some(region)) => worker.submit(region),
-                Ok(None) => log::debug!("selection cancelled"),
-                Err(e) => log::error!("capture failed: {e:#}"),
-            }
-
-            // Ignore hotkey presses that happened while the overlay was open.
-            drain_hotkey_presses(hotkey);
+        Command::Capture => app::capture_once(store, args.ocr),
+        Command::Image(path) => recognize_file(&path, &store, &args.ocr),
+        Command::ListModels => {
+            print_models(&store);
+            Ok(())
         }
     }
-
-    Ok(())
-}
-
-/// Consumes queued hotkey events and reports whether `hotkey` was pressed.
-fn drain_hotkey_presses(hotkey: HotKey) -> bool {
-    let mut pressed = false;
-    while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-        pressed |= event.id == hotkey.id() && event.state == HotKeyState::Pressed;
-    }
-    pressed
-}
-
-fn capture_selection() -> Result<Option<image::RgbaImage>> {
-    let shot = capture::capture_monitor_under_cursor()?;
-    overlay::select_region(&shot)
 }
 
 #[expect(clippy::print_stdout, reason = "CLI mode prints the recognized text")]
@@ -125,17 +67,11 @@ fn print_models(store: &ModelStore) {
         println!("  {:<18} {:<24} {status}", spec.id, spec.name);
     }
 
-    println!(
-        "
-Recognizers (auto mode runs every installed one):"
-    );
+    println!("\nRecognizers (auto mode runs every installed one):");
     for spec in ocr::models::RECOGNIZERS {
         let status = installed(store.recognizer_path(spec.id).is_file());
-        println!(
-            "  {:<18} {:<24} {status}
-  {:<18} {}",
-            spec.id, spec.name, "", spec.languages
-        );
+        println!("  {:<18} {:<24} {status}", spec.id, spec.name);
+        println!("  {:<18} {}", "", spec.languages);
     }
 }
 

@@ -11,12 +11,11 @@ pub enum TrayAction {
 
 pub struct Tray {
     icon: TrayIcon,
-    capture: MenuItem,
-    quit: MenuItem,
 }
 
 impl Tray {
-    pub fn new(hotkey_label: &str) -> Result<Self> {
+    /// Creates the tray icon; `on_action` is called from the thread that delivers tray events.
+    pub fn new(hotkey_label: &str, on_action: impl Fn(TrayAction) + Send + Sync + 'static) -> Result<Self> {
         let capture = MenuItem::new(format!("Capture text\t{hotkey_label}"), true, None);
         let quit = MenuItem::new("Quit", true, None);
 
@@ -30,33 +29,32 @@ impl Tray {
             .with_menu_on_left_click(false)
             .build()?;
 
-        Ok(Self { icon, capture, quit })
-    }
+        let on_action = std::sync::Arc::new(on_action);
 
-    /// Drains pending tray and menu events.
-    pub fn poll(&self) -> Option<TrayAction> {
-        let mut action = None;
-
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                action = Some(TrayAction::Capture);
+        TrayIconEvent::set_event_handler(Some({
+            let on_action = std::sync::Arc::clone(&on_action);
+            move |event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    on_action(TrayAction::Capture);
+                }
             }
-        }
+        }));
 
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == *self.capture.id() {
-                action = Some(TrayAction::Capture);
-            } else if event.id == *self.quit.id() {
-                return Some(TrayAction::Quit);
+        let (capture_id, quit_id) = (capture.id().clone(), quit.id().clone());
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            if event.id == capture_id {
+                on_action(TrayAction::Capture);
+            } else if event.id == quit_id {
+                on_action(TrayAction::Quit);
             }
-        }
+        }));
 
-        action
+        Ok(Self { icon })
     }
 
     pub fn set_status(&self, status: &str) {

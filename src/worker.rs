@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use image::RgbaImage;
 
+use crate::clipboard::Clipboard;
 use crate::ocr::models::{ModelStore, OcrConfig};
 use crate::ocr::{self, OcrEngine};
-use crate::platform::{self, Waker};
+use crate::platform;
 
 /// Characters of the recognized text shown in the tray tooltip.
 const PREVIEW_CHARS: usize = 40;
@@ -27,22 +28,16 @@ enum Job {
 
 pub struct OcrWorker {
     jobs: Sender<Job>,
-    status: Receiver<String>,
 }
 
 impl OcrWorker {
-    pub fn spawn(store: ModelStore, config: OcrConfig, waker: Waker) -> Self {
+    /// `report` receives a short status line after each job; it is called on the worker thread.
+    pub fn spawn(store: ModelStore, config: OcrConfig, report: impl Fn(String) + Send + 'static) -> Self {
         let (jobs, job_rx) = channel();
-        let (status_tx, status) = channel();
 
         let run = move || {
-            let report = |msg: String| {
-                // The receiver is gone only when the app is shutting down.
-                let _ = status_tx.send(msg);
-                waker.wake();
-            };
-
             let mut engine: Option<OcrEngine> = None;
+            let mut clipboard = Clipboard::default();
 
             while let Some(job) = next_job(&job_rx, &mut engine) {
                 let loaded = match &mut engine {
@@ -61,7 +56,7 @@ impl OcrWorker {
                     continue;
                 };
 
-                match process(loaded, &image) {
+                match process(loaded, &mut clipboard, &image) {
                     Ok(msg) => report(msg),
                     Err(e) => {
                         log::error!("recognition failed: {e:#}");
@@ -76,7 +71,7 @@ impl OcrWorker {
             .spawn(run)
             .expect("the OS refused to spawn the OCR thread");
 
-        Self { jobs, status }
+        Self { jobs }
     }
 
     /// Starts loading the models in the background, if they are not loaded yet.
@@ -86,10 +81,6 @@ impl OcrWorker {
 
     pub fn submit(&self, image: RgbaImage) {
         self.send(Job::Recognize(image));
-    }
-
-    pub fn poll_status(&self) -> Option<String> {
-        self.status.try_recv().ok()
     }
 
     fn send(&self, job: Job) {
@@ -123,7 +114,7 @@ fn next_job(jobs: &Receiver<Job>, engine: &mut Option<OcrEngine>) -> Option<Job>
 }
 
 /// Recognizes the image, copies the text to the clipboard and returns a status line.
-fn process(engine: &mut OcrEngine, image: &RgbaImage) -> Result<String> {
+fn process(engine: &mut OcrEngine, clipboard: &mut Clipboard, image: &RgbaImage) -> Result<String> {
     let started = Instant::now();
     let text = ocr::assemble_text(&engine.recognize(image)?);
     log::info!("recognized {} chars in {:?}", text.chars().count(), started.elapsed());
@@ -132,7 +123,7 @@ fn process(engine: &mut OcrEngine, image: &RgbaImage) -> Result<String> {
         return Ok("no text found".into());
     }
 
-    arboard::Clipboard::new()?.set_text(text.as_str())?;
+    clipboard.copy(&text)?;
     log::info!("copied to clipboard:\n{text}");
 
     let preview: String = text.chars().take(PREVIEW_CHARS).collect();
