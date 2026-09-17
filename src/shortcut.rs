@@ -6,7 +6,6 @@
 use std::fmt;
 use std::str::FromStr;
 
-use eframe::egui;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

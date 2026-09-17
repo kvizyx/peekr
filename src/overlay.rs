@@ -4,15 +4,18 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use anyhow::{Result, anyhow};
-use eframe::egui::emath::GuiRounding as _;
-use eframe::egui::{
-    self, Align2, Color32, CursorIcon, FontId, Key, Painter, Pos2, Rect, Stroke, StrokeKind, TextureOptions, Vec2,
+use anyhow::Result;
+use egui::emath::GuiRounding as _;
+use egui::{
+    Align2, Color32, CursorIcon, FontId, Key, Painter, Pos2, Rect, Stroke, StrokeKind, TextureOptions, Vec2,
     ViewportCommand,
 };
 use image::RgbaImage;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowAttributes, WindowLevel};
 
 use crate::capture::Screenshot;
+use crate::window;
 
 const DIM: Color32 = Color32::from_black_alpha(120);
 const ACCENT: Color32 = Color32::from_rgb(64, 156, 255);
@@ -34,41 +37,31 @@ struct PixelRect {
 /// Shows the overlay and returns the selected part of the screenshot, or `None` if cancelled.
 pub fn select_region(shot: &Screenshot) -> Result<Option<RgbaImage>> {
     let selection: Rc<Cell<Option<PixelRect>>> = Rc::default();
-
-    let viewport = egui::ViewportBuilder::default()
-        .with_title("ochco")
-        .with_decorations(false)
-        .with_always_on_top()
-        .with_taskbar(false)
-        .with_active(true);
-
-    let options = eframe::NativeOptions {
-        viewport: cover_monitor(viewport, shot),
-        centered: false,
-        ..Default::default()
-    };
-
     let started = Instant::now();
-    let app_selection = Rc::clone(&selection);
 
-    eframe::run_native(
-        "ochco-overlay",
-        options,
-        Box::new(|cc| {
+    window::run(
+        |event_loop| {
+            let attributes = Window::default_attributes()
+                .with_title("ochco")
+                .with_decorations(false)
+                .with_window_level(WindowLevel::AlwaysOnTop);
+
+            cover_monitor(attributes, event_loop, shot)
+        },
+        |ctx| {
             let size = [shot.image.width() as usize, shot.image.height() as usize];
             let pixels = egui::ColorImage::from_rgba_unmultiplied(size, shot.image.as_raw());
-            let texture = cc.egui_ctx.load_texture("screenshot", pixels, TextureOptions::NEAREST);
+            let texture = ctx.load_texture("screenshot", pixels, TextureOptions::NEAREST);
             log::debug!("overlay window created in {:?}", started.elapsed());
 
-            Ok(Box::new(Overlay {
+            Overlay {
                 texture,
                 image_size: size,
                 drag_start: None,
-                selection: app_selection,
-            }))
-        }),
-    )
-    .map_err(|e| anyhow!("overlay window failed: {e}"))?;
+                selection: Rc::clone(&selection),
+            }
+        },
+    )?;
 
     let region = selection
         .get()
@@ -77,26 +70,28 @@ pub fn select_region(shot: &Screenshot) -> Result<Option<RgbaImage>> {
     Ok(region)
 }
 
-/// Makes the window cover the monitor the screenshot was taken from.
-///
-/// On Windows this is a plain window of the monitor's size rather than a fullscreen one:
-/// switching the display in and out of fullscreen mode makes the screen flash dark when the
-/// overlay opens and closes.
+/// Makes the window cover the monitor the screenshot was taken from: a plain window of the
+/// monitor's size, as switching the display in and out of fullscreen mode makes it blink.
 #[cfg(windows)]
-fn cover_monitor(viewport: egui::ViewportBuilder, shot: &Screenshot) -> egui::ViewportBuilder {
-    let (x, y) = (shot.origin.0 as f32, shot.origin.1 as f32);
-    let (width, height) = (shot.image.width() as f32, shot.image.height() as f32);
+fn cover_monitor(attributes: WindowAttributes, _: &ActiveEventLoop, shot: &Screenshot) -> WindowAttributes {
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    use winit::platform::windows::WindowAttributesExtWindows as _;
 
-    viewport
-        .with_position([x / shot.scale, y / shot.scale])
-        .with_inner_size([width / shot.scale, height / shot.scale])
+    attributes
+        .with_position(PhysicalPosition::new(shot.origin.0, shot.origin.1))
+        .with_inner_size(PhysicalSize::new(shot.image.width(), shot.image.height()))
+        .with_skip_taskbar(true)
 }
 
 /// Makes the window cover the monitor the screenshot was taken from. Wayland does not let
 /// clients position windows, so fullscreen is the only way to get there.
 #[cfg(not(windows))]
-fn cover_monitor(viewport: egui::ViewportBuilder, shot: &Screenshot) -> egui::ViewportBuilder {
-    viewport.with_monitor(shot.monitor_index)
+fn cover_monitor(attributes: WindowAttributes, event_loop: &ActiveEventLoop, shot: &Screenshot) -> WindowAttributes {
+    use winit::window::Fullscreen;
+
+    let monitor = event_loop.available_monitors().nth(shot.monitor_index);
+
+    attributes.with_fullscreen(Some(Fullscreen::Borderless(monitor)))
 }
 
 struct Overlay {
@@ -107,17 +102,11 @@ struct Overlay {
     selection: Rc<Cell<Option<PixelRect>>>,
 }
 
-impl eframe::App for Overlay {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl window::App for Overlay {
+    fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let screen = ui.max_rect();
         ctx.set_cursor_icon(CursorIcon::Crosshair);
-
-        // The borderless window covers the whole monitor, so the GPU driver may treat it as a
-        // fullscreen app and enables variable refresh rate (G-Sync / FreeSync). Repainting only
-        // on input makes the frame rate jump, which VRR monitors show as brightness flicker;
-        // a steady vsynced frame rate avoids that.
-        ctx.request_repaint();
 
         let (pressed, released, cursor, cancel) = ctx.input(|i| {
             (
@@ -159,10 +148,6 @@ impl eframe::App for Overlay {
 
             self.drag_start = None;
         }
-    }
-
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 1.0]
     }
 }
 

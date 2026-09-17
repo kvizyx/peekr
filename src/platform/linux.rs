@@ -26,6 +26,9 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
 }
 
+/// X11 and Wayland offer no portable way to opt a window out of compositor animations.
+pub fn disable_window_animations(_window: &winit::window::Window) {}
+
 /// Cursor position in virtual-desktop pixels, if the display server exposes it.
 ///
 /// Wayland does not let clients query the global cursor position, and XWayland only knows it

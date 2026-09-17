@@ -11,9 +11,6 @@ pub struct Screenshot {
     /// Top-left corner of the monitor in physical virtual-desktop pixels.
     #[cfg(windows)]
     pub origin: (i32, i32),
-    /// Physical pixels per logical point on the monitor.
-    #[cfg(windows)]
-    pub scale: f32,
     /// Monitor index as enumerated by the windowing system.
     #[cfg(not(windows))]
     pub monitor_index: usize,
@@ -43,8 +40,6 @@ fn capture() -> Result<Screenshot> {
         image,
         #[cfg(windows)]
         origin: (monitor.x().unwrap_or(0), monitor.y().unwrap_or(0)),
-        #[cfg(windows)]
-        scale: monitor.scale_factor().unwrap_or(1.0),
         #[cfg(not(windows))]
         monitor_index: platform::monitor_index(&monitor).unwrap_or(0),
     })

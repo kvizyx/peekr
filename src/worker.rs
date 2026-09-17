@@ -96,7 +96,7 @@ fn next_job(jobs: &Receiver<Job>, engine: &mut Option<OcrEngine>) -> Option<Job>
             Err(RecvTimeoutError::Timeout) => {
                 *engine = None;
 
-                // The overlay's OpenGL driver state stays committed after the window closes;
+                // Freed model and screenshot buffers stay committed to the process;
                 // idle is the moment to hand those pages back to the system.
                 platform::trim_working_set();
                 log::info!("unloaded OCR models after {IDLE_UNLOAD_AFTER:?} of inactivity");

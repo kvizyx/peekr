@@ -9,7 +9,8 @@ rust-version = "1.95"
 [dependencies]
 anyhow = "1.0.104"
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
-eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+egui = { version = "0.36", default-features = false, features = ["default_fonts"] }
+egui-winit = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
 env_logger = "0.11.11"
 global-hotkey = "0.8"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -17,15 +18,19 @@ imageproc = { version = "0.27", default-features = false }
 log = "0.4.34"
 # rustls instead of the default native-tls, so building on Linux does not need OpenSSL headers.
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-rustls", "api-27"] }
+# Windows are drawn on the CPU and presented without a GPU swap chain; see src/window/mod.rs.
+softbuffer = { version = "0.4", default-features = false, features = ["wayland", "wayland-dlopen", "x11", "x11-dlopen"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 # ksni talks to the tray over D-Bus on Linux instead of pulling in GTK.
 tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "x11"] }
 xcap = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_System_Console",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",

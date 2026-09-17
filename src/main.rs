@@ -13,6 +13,7 @@ mod platform;
 mod settings;
 mod shortcut;
 mod tray;
+mod window;
 mod worker;
 
 use std::path::PathBuf;

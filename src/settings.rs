@@ -1,48 +1,37 @@
 //! Settings window: shows the capture hotkey and records a new one.
 
-use std::sync::Arc;
+use anyhow::Result;
+use egui::{Align, Event, Key, Layout, RichText, ViewportCommand};
+use winit::window::{Icon, WindowButtons};
 
-use anyhow::{Result, anyhow};
-use eframe::egui::{self, Align, Event, Key, Layout, RichText, ViewportCommand};
-
-use crate::icon;
 use crate::shortcut::Shortcut;
+use crate::{icon, window};
 
 const WINDOW_SIZE: [f32; 2] = [420.0, 170.0];
 
 /// Shows the settings window until the user closes it. `apply` is called with every recorded
 /// hotkey and reports why it cannot be used; the window shows the result.
 pub fn edit_hotkey(current: Shortcut, apply: &mut dyn FnMut(Shortcut) -> Result<()>) -> Result<()> {
-    let icon = egui::IconData {
-        rgba: icon::rgba(),
-        width: icon::SIZE,
-        height: icon::SIZE,
-    };
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Settings")
-            .with_inner_size(WINDOW_SIZE)
-            .with_resizable(false)
-            .with_maximize_button(false)
-            .with_icon(Arc::new(icon)),
-        centered: true,
-        ..Default::default()
-    };
+    window::run(
+        |event_loop| {
+            let icon = Icon::from_rgba(icon::rgba(), icon::SIZE, icon::SIZE)
+                .inspect_err(|e| log::warn!("invalid window icon: {e}"))
+                .ok();
 
-    eframe::run_native(
-        "ochco-settings",
-        options,
-        Box::new(move |_| {
-            Ok(Box::new(SettingsApp {
-                hotkey: current,
-                recording: false,
-                super_held: false,
-                message: None,
-                apply,
-            }))
-        }),
+            window::centered(event_loop, WINDOW_SIZE)
+                .with_title("Settings")
+                .with_resizable(false)
+                .with_enabled_buttons(WindowButtons::CLOSE | WindowButtons::MINIMIZE)
+                .with_window_icon(icon)
+        },
+        |_| SettingsApp {
+            hotkey: current,
+            recording: false,
+            super_held: false,
+            message: None,
+            apply,
+        },
     )
-    .map_err(|e| anyhow!("settings window failed: {e}"))
 }
 
 enum Message {
@@ -60,8 +49,8 @@ struct SettingsApp<'a> {
     apply: &'a mut dyn FnMut(Shortcut) -> Result<()>,
 }
 
-impl eframe::App for SettingsApp<'_> {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl window::App for SettingsApp<'_> {
+    fn ui(&mut self, ui: &mut egui::Ui) {
         self.track_super_key(ui.ctx());
 
         if self.recording {

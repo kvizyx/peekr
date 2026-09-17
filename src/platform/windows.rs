@@ -1,7 +1,8 @@
 use std::ptr::null_mut;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::Foundation::{HWND, POINT, TRUE};
+use windows_sys::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
@@ -32,6 +33,32 @@ pub fn trim_working_set() {
 /// Directory for per-user settings (`%APPDATA%`).
 pub fn config_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+}
+
+/// Stops Windows from animating the window when it is shown and hidden. The animation scales and
+/// fades the window, which for a screen-sized overlay looks like the whole screen jumping.
+pub fn disable_window_animations(window: &winit::window::Window) {
+    use winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return;
+    };
+
+    let disabled: windows_sys::core::BOOL = TRUE;
+
+    // SAFETY: the handle belongs to a live window, and `disabled` is a BOOL that outlives the call,
+    // which is what DWMWA_TRANSITIONS_FORCEDISABLED expects.
+    unsafe {
+        DwmSetWindowAttribute(
+            handle.hwnd.get() as HWND,
+            DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+            (&raw const disabled).cast(),
+            size_of::<windows_sys::core::BOOL>() as u32,
+        );
+    }
 }
 
 /// Cursor position in physical virtual-desktop coordinates.
