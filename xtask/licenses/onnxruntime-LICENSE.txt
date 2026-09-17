@@ -1,4 +1,4 @@
-ONNX Runtime (https://github.com/microsoft/onnxruntime) is statically linked into ochco.
+ONNX Runtime (https://github.com/microsoft/onnxruntime) is statically linked into peekr.
 
 MIT License
 

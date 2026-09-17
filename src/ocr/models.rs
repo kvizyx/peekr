@@ -265,7 +265,7 @@ mod tests {
                 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
                 let name = format!(
-                    "ochco-test-{}-{}",
+                    "peekr-test-{}-{}",
                     std::process::id(),
                     COUNTER.fetch_add(1, Ordering::Relaxed)
                 );

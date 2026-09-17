@@ -1,6 +1,6 @@
 //! `cargo xtask dist`: builds a release archive for the current platform.
 //!
-//! The archive `target/dist/ochco-<version>-<os>-<arch>` (.zip on Windows, .tar.gz elsewhere)
+//! The archive `target/dist/peekr-<version>-<os>-<arch>` (.zip on Windows, .tar.gz elsewhere)
 //! contains a directory of the same name with the executable, the models, docs and license
 //! files. The app finds `models/` next to its executable, so it runs right after unpacking.
 
@@ -16,7 +16,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use zip::write::SimpleFileOptions;
 
-const PACKAGE: &str = "ochco";
+const PACKAGE: &str = "peekr";
 /// Project files copied into the root of the archive.
 const DOCS: &[&str] = &["README.md", "LICENSE"];
 /// License files that are not generated, relative to the project root.

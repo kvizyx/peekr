@@ -156,7 +156,7 @@ fn download_verified(url: &str, dest: &Path, expected_sha256: &str) -> Result<()
     fs::create_dir_all(dest.parent().context("destination has no parent directory")?)?;
 
     let response = ureq::get(url)
-        .header("User-Agent", "ochco-xtask")
+        .header("User-Agent", "peekr-xtask")
         .call()
         .with_context(|| format!("requesting {url}"))?;
     let mut body = response.into_body().into_reader();

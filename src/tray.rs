@@ -7,7 +7,7 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 use crate::icon;
 use crate::shortcut::Shortcut;
 
-const APP_NAME: &str = "Ochco";
+const APP_NAME: &str = "Peekr";
 
 pub enum TrayAction {
     Capture,

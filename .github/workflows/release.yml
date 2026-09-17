@@ -76,7 +76,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ochco-${{ matrix.platform }}
+          name: peekr-${{ matrix.platform }}
           path: |
             target/dist/*.zip
             target/dist/*.tar.gz
@@ -103,5 +103,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --draft \
-            --title "ochco ${GITHUB_REF_NAME#v}" \
+            --title "peekr ${GITHUB_REF_NAME#v}" \
             --generate-notes

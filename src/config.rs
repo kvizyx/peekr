@@ -1,5 +1,5 @@
 //! User settings stored in `config.toml` in the platform's config directory
-//! (`%APPDATA%\ochco` on Windows, `$XDG_CONFIG_HOME/ochco` or `~/.config/ochco` on Linux).
+//! (`%APPDATA%\peekr` on Windows, `$XDG_CONFIG_HOME/peekr` or `~/.config/peekr` on Linux).
 
 use std::fs;
 use std::path::PathBuf;
@@ -46,7 +46,7 @@ impl Config {
         let path = path().context("no config directory on this system")?;
         fs::create_dir_all(path.parent().context("config path has no parent")?)?;
 
-        let text = format!("# ochco settings\n\n{}", toml::to_string(self)?);
+        let text = format!("# peekr settings\n\n{}", toml::to_string(self)?);
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
 
         log::info!("saved settings to {}", path.display());
@@ -55,7 +55,7 @@ impl Config {
 }
 
 fn path() -> Option<PathBuf> {
-    Some(platform::config_dir()?.join("ochco").join(FILE_NAME))
+    Some(platform::config_dir()?.join("peekr").join(FILE_NAME))
 }
 
 #[cfg(test)]

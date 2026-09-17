@@ -1,4 +1,4 @@
-# Ochco - CLAUDE.md
+# Peekr - CLAUDE.md
 
 An offline cross-platform OCR utility that can extract text from screen and images, powered by
 PP-OCRv5 and PP-OCRv6 models via ONNX Runtime.

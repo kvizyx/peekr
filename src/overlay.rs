@@ -61,7 +61,7 @@ pub fn capture_text(shot: &Screenshot, recognize: Recognize<'_>, copy: CopyText<
     window::run(
         |event_loop| {
             let attributes = Window::default_attributes()
-                .with_title("ochco")
+                .with_title("peekr")
                 .with_decorations(false)
                 .with_window_level(WindowLevel::AlwaysOnTop);
 

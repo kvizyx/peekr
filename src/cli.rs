@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::ocr::models::{OcrConfig, RecognitionMode};
 
-pub const USAGE: &str = "usage: ochco [--capture | --image <file> | --list-models] \
+pub const USAGE: &str = "usage: peekr [--capture | --image <file> | --list-models] \
                          [--det <detector id>] [--rec <recognizer id> | auto]";
 
 /// What the process should do.

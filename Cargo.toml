@@ -1,5 +1,5 @@
 [package]
-name = "ochco"
+name = "peekr"
 version = "0.1.0"
 edition = "2024"
 description = "Select a screen region and copy the recognized text"

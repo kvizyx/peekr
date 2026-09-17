@@ -1,12 +1,12 @@
-<h1 align="center">Ochco</h1>
+<h1 align="center">Peekr</h1>
 
 <p align="center">
-  <img src="assets/icon.svg" width="160" alt="Ochco icon: a hand-drawn magnifying glass">
+  <img src="assets/icon.svg" width="160" alt="Peekr icon: a hand-drawn magnifying glass">
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
-  <a href="https://github.com/kvizyx/ochco/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kvizyx/ochco/ci.yml?branch=main&label=CI&logo=github" alt="CI"></a>
+  <a href="https://github.com/kvizyx/peekr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kvizyx/peekr/ci.yml?branch=main&label=CI&logo=github" alt="CI"></a>
 </p>
 
 Cross-platform OCR utility that can extract text from screen and images. Recognition runs fully offline on [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) models
@@ -15,41 +15,41 @@ Cross-platform OCR utility that can extract text from screen and images. Recogni
 ## Installation
 
 Download the archive for your system from
-[Releases](https://github.com/kvizyx/ochco/releases), unpack it anywhere and run `ochco`. The
+[Releases](https://github.com/kvizyx/peekr/releases), unpack it anywhere and run `peekr`. The
 archive already contains the models, so everything works offline. Keep the `models` directory next
 to the executable.
 
 | System | Archive | Requirements |
 | --- | --- | --- |
-| Windows | `ochco-<version>-windows-x86_64.zip` | Windows 10 or 11, x64 |
-| Linux | `ochco-<version>-linux-x86_64.tar.gz`<br>`ochco-<version>-linux-aarch64.tar.gz` | x86_64 or ARM64 with glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39 or newer) |
+| Windows | `peekr-<version>-windows-x86_64.zip` | Windows 10 or 11, x64 |
+| Linux | `peekr-<version>-linux-x86_64.tar.gz`<br>`peekr-<version>-linux-aarch64.tar.gz` | x86_64 or ARM64 with glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39 or newer) |
 
 ## Usage
 
-Ochco lives in the system tray. Press **Win+Shift+O** (**Super+Shift+O** on Linux) or click the tray
+Peekr lives in the system tray. Press **Win+Shift+O** (**Super+Shift+O** on Linux) or click the tray
 icon and drag over the text. The recognized text appears next to the selection: press **Copy**
 (or **Enter**, **Ctrl+C**) to put it on the clipboard, or drag again to select something else.
 **Esc** or a right click closes the overlay.
 
 To change the hotkey, open **Settings** from the tray menu. Settings are stored in
-`%APPDATA%\ochco\config.toml` on Windows and `~/.config/ochco/config.toml` on Linux.
+`%APPDATA%\peekr\config.toml` on Windows and `~/.config/peekr/config.toml` on Linux.
 
 ```bash
-ochco --capture             # capture once and exit after copying, e.g. from a desktop shortcut
-ochco --image picture.png   # recognize an image file and print the text
-ochco --list-models         # show the models and the languages they cover
+peekr --capture             # capture once and exit after copying, e.g. from a desktop shortcut
+peekr --image picture.png   # recognize an image file and print the text
+peekr --list-models         # show the models and the languages they cover
 ```
 
 Text detection uses one model for all languages; recognition models cover different scripts. By
-default ochco runs every installed recognizer and keeps the best reading of each line. You can pin
-the models instead, e.g. `ochco --det pp-ocrv5-mobile --rec pp-ocrv5-eslav`.
+default peekr runs every installed recognizer and keeps the best reading of each line. You can pin
+the models instead, e.g. `peekr --det pp-ocrv5-mobile --rec pp-ocrv5-eslav`.
 
 ### Linux notes
 
-- **Hotkey.** The global hotkey works on X11 only. On Wayland, bind `ochco --capture` to a custom
+- **Hotkey.** The global hotkey works on X11 only. On Wayland, bind `peekr --capture` to a custom
   shortcut in your desktop settings.
 - **Tray icon.** Uses the StatusNotifierItem protocol (KDE, Cinnamon, XFCE, most tiling setups). On
-  GNOME it needs the AppIndicator extension; without it ochco still runs and captures on the hotkey.
+  GNOME it needs the AppIndicator extension; without it peekr still runs and captures on the hotkey.
 - **Screen capture on Wayland** goes through the GNOME Shell or xdg-desktop-portal screenshot APIs
   and needs XWayland to list monitors. Without a cursor position on Wayland, the primary monitor
   is captured.

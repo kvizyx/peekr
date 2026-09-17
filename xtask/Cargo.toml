@@ -3,7 +3,7 @@ name = "xtask"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Development tasks for ochco: downloading models, rendering the icon and packaging releases"
+description = "Development tasks for peekr: downloading models, rendering the icon and packaging releases"
 license = "MIT"
 publish = false
 

@@ -1,4 +1,4 @@
-//! Development tasks for ochco, run with `cargo xtask <task>` (the alias is in `.cargo/config.toml`).
+//! Development tasks for peekr, run with `cargo xtask <task>` (the alias is in `.cargo/config.toml`).
 //!
 //! Status output goes to stderr, like cargo's own.
 

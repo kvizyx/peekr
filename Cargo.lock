@@ -2712,31 +2712,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ochco"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "egui",
- "egui-winit",
- "env_logger",
- "global-hotkey",
- "image",
- "imageproc",
- "libc",
- "log",
- "ort",
- "serde",
- "softbuffer",
- "toml",
- "tray-icon",
- "windows-sys 0.61.2",
- "winit",
- "x11rb",
- "xcap",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2836,6 +2811,31 @@ name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
+name = "peekr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "egui",
+ "egui-winit",
+ "env_logger",
+ "global-hotkey",
+ "image",
+ "imageproc",
+ "libc",
+ "log",
+ "ort",
+ "serde",
+ "softbuffer",
+ "toml",
+ "tray-icon",
+ "windows-sys 0.61.2",
+ "winit",
+ "x11rb",
+ "xcap",
+]
 
 [[package]]
 name = "peniko"

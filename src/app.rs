@@ -59,7 +59,7 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
 
     match hotkey.as_ref().and_then(GlobalHotkey::current) {
         Some(shortcut) => log::info!("ready: press {shortcut} or click the tray icon"),
-        None => log::info!("ready: click the tray icon or run `ochco --capture`"),
+        None => log::info!("ready: click the tray icon or run `peekr --capture`"),
     }
 
     while let Some(event) = event_loop.next(&events) {
