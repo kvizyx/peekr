@@ -29,6 +29,12 @@ choose **More info → Run anyway**.
 
 **Archives.** Unpack anywhere and run `peekr`; keep the `models` directory next to the executable.
 
+On Windows, peekr is also on the Windows Package Manager:
+
+```powershell
+winget install peekr
+```
+
 ## Usage
 
 Peekr lives in the system tray. Press **Win+Shift+O** (**Super+Shift+O** on Linux) or click the tray
@@ -95,6 +101,30 @@ Build the Windows installer, which also needs [Inno Setup 6](https://jrsoftware.
 
 ```bash
 cargo xtask installer
+```
+
+### Publishing to winget
+
+Updates are submitted automatically: when a release is published, the `winget` workflow opens a
+pull request against [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs). It needs a
+`WINGET_TOKEN` secret, a classic personal access token with the `public_repo` scope from an account
+that has forked that repository; without the secret the workflow only reports that it skipped.
+
+The first version has to be submitted by hand, since the package does not exist there yet. Write
+the manifests (they point at the installer of that release and hash it):
+
+```bash
+cargo xtask winget 0.1.1
+```
+
+Check them and open the pull request:
+
+```bash
+winget validate --manifest target/winget/manifests/k/kvizyx/Peekr/0.1.1
+```
+
+```bash
+wingetcreate submit --token <github token> target/winget/manifests/k/kvizyx/Peekr/0.1.1
 ```
 
 ## License

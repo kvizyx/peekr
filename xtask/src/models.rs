@@ -218,7 +218,7 @@ fn sha256_of_file(path: &Path) -> Result<String> {
     Ok(hex(&hasher.finalize()))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
     bytes

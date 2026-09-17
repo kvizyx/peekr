@@ -128,7 +128,7 @@ fn run(command: &mut Command) -> Result<()> {
 }
 
 /// Reads `version` from the `[package]` section of the project's `Cargo.toml`.
-fn package_version(root: &Path) -> Result<String> {
+pub fn package_version(root: &Path) -> Result<String> {
     let manifest = fs::read_to_string(root.join("Cargo.toml"))?;
 
     let version = manifest

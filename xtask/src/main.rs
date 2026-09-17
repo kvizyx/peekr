@@ -6,6 +6,7 @@ mod dist;
 mod icon;
 mod installer;
 mod models;
+mod winget;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,7 +19,8 @@ tasks:
   icon      render assets/icon.svg into assets/icon-32.png (embedded in the app) and icon.ico
   dist      build a release archive for this platform into target/dist
             (needs downloaded models and cargo-about: cargo install cargo-about --features cli)
-  installer build the Windows installer into target/dist (needs Inno Setup 6)";
+  installer build the Windows installer into target/dist (needs Inno Setup 6)
+  winget    write the winget manifests for a release into target/winget";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,6 +30,8 @@ fn main() -> ExitCode {
         ["icon"] => icon::render(project_root()),
         ["dist"] => dist::package(project_root()),
         ["installer"] => installer::build(project_root()),
+        ["winget"] => winget::manifests(project_root(), None),
+        ["winget", version] => winget::manifests(project_root(), Some(version)),
         [] | ["help" | "--help" | "-h"] => {
             eprintln!("{USAGE}");
             return ExitCode::SUCCESS;
