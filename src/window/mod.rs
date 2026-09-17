@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result, anyhow};
 use egui::{ViewportCommand, ViewportId, ViewportInfo};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::WindowEvent;
+use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -58,6 +58,7 @@ pub fn run<A: App>(
         create: Some(create),
         app: None,
         windows: Vec::new(),
+        closing: false,
         error: None,
     };
     let result = event_loop.run_app_on_demand(&mut runner);
@@ -102,6 +103,8 @@ struct Runner<A, Attributes, Create> {
     create: Option<Create>,
     app: Option<A>,
     windows: Vec<AppWindow>,
+    /// The windows were dropped; the loop exits on its next iteration.
+    closing: bool,
     error: Option<anyhow::Error>,
 }
 
@@ -134,25 +137,38 @@ where
 
         let mut windows = match windows {
             Ok(windows) => windows,
-            Err(e) => return self.fail(event_loop, e),
+            Err(e) => return self.fail(e),
         };
 
         let contexts: Vec<_> = windows.iter().map(|w| w.ctx.clone()).collect();
         let mut app = create(&contexts);
 
-        for (index, window) in windows.iter_mut().enumerate() {
-            match window.redraw(&mut app, index) {
-                Ok(false) => {}
-                Ok(true) => return event_loop.exit(),
-                Err(e) => return self.fail(event_loop, e),
-            }
-        }
+        let redrawn = windows
+            .iter_mut()
+            .enumerate()
+            .try_fold(false, |close, (index, window)| {
+                Ok::<_, anyhow::Error>(close || window.redraw(&mut app, index)?)
+            });
 
         self.app = Some(app);
         self.windows = windows;
+
+        match redrawn {
+            Ok(false) => {}
+            Ok(true) => self.close(),
+            Err(e) => self.fail(e),
+        }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, _: StartCause) {
+        // Exiting in the iteration that dropped the windows would leave them on screen: winit
+        // destroys dropped Wayland windows only in its next iteration.
+        if self.closing {
+            event_loop.exit();
+        }
+    }
+
+    fn window_event(&mut self, _: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let (Some(app), Some(index)) = (&mut self.app, self.windows.iter().position(|w| w.window.id() == id)) else {
             return;
         };
@@ -171,12 +187,18 @@ where
 
         match redrawn {
             Ok(false) => {}
-            Ok(true) => self.close(event_loop),
-            Err(e) => self.fail(event_loop, e),
+            Ok(true) => self.close(),
+            Err(e) => self.fail(e),
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.closing {
+            // Run the next iteration right away rather than wait for input.
+            event_loop.set_control_flow(ControlFlow::Poll);
+            return;
+        }
+
         let now = Instant::now();
         let mut wake_at = None;
 
@@ -199,17 +221,17 @@ where
 }
 
 impl<A, Attributes, Create> Runner<A, Attributes, Create> {
-    fn close(&mut self, event_loop: &ActiveEventLoop) {
+    fn close(&mut self) {
         for window in self.windows.drain(..) {
             window.window.set_visible(false);
         }
 
-        event_loop.exit();
+        self.closing = true;
     }
 
-    fn fail(&mut self, event_loop: &ActiveEventLoop, error: anyhow::Error) {
+    fn fail(&mut self, error: anyhow::Error) {
         self.error = Some(error);
-        self.close(event_loop);
+        self.close();
     }
 }
 
