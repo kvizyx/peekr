@@ -1,6 +1,6 @@
 //! The app icon, rendered from `assets/icon.svg` by `cargo xtask icon`.
 
-const PNG: &[u8] = include_bytes!("../assets/icon.png");
+const PNG: &[u8] = include_bytes!("../assets/icon-32.png");
 
 pub const SIZE: u32 = 32;
 
@@ -10,7 +10,7 @@ pub fn rgba() -> Vec<u8> {
         .expect("the embedded icon is a valid PNG")
         .into_rgba8();
 
-    debug_assert_eq!(icon.dimensions(), (SIZE, SIZE), "assets/icon.png has the wrong size");
+    debug_assert_eq!(icon.dimensions(), (SIZE, SIZE), "assets/icon-32.png has the wrong size");
 
     icon.into_raw()
 }

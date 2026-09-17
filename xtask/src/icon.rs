@@ -10,7 +10,7 @@ const SIZE: u32 = 32;
 
 pub fn render(root: &Path) -> Result<()> {
     let source = root.join("assets/icon.svg");
-    let output = root.join("assets/icon.png");
+    let output = root.join(format!("assets/icon-{SIZE}.png"));
 
     let data = std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?;
     let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).context("parsing the icon SVG")?;

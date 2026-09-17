@@ -14,7 +14,7 @@ usage: cargo xtask <task>
 
 tasks:
   models   download the OCR models into ./models (skips files that are up to date)
-  icon     render assets/icon.svg into assets/icon.png, which the app embeds
+  icon     render assets/icon.svg into assets/icon-32.png, which the app embeds
   dist     build a release archive for this platform into target/dist
            (needs downloaded models and cargo-about: cargo install cargo-about --features cli)";
 
