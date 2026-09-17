@@ -18,13 +18,15 @@ to the executable.
 ## Usage
 
 Ochco lives in the system tray. Press **Win+Shift+O** (**Super+Shift+O** on Linux) or click the tray
-icon, drag over the text, and paste it anywhere. **Esc** or a right click cancels the selection.
+icon and drag over the text. The recognized text appears next to the selection: press **Copy**
+(or **Enter**, **Ctrl+C**) to put it on the clipboard, or drag again to select something else.
+**Esc** or a right click closes the overlay.
 
 To change the hotkey, open **Settings** from the tray menu. Settings are stored in
 `%APPDATA%\ochco\config.toml` on Windows and `~/.config/ochco/config.toml` on Linux.
 
 ```bash
-ochco --capture             # capture once and exit, e.g. from a desktop shortcut
+ochco --capture             # capture once and exit after copying, e.g. from a desktop shortcut
 ochco --image picture.png   # recognize an image file and print the text
 ochco --list-models         # show the models and the languages they cover
 ```

@@ -9,19 +9,19 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use image::RgbaImage;
 
-use crate::clipboard::Clipboard;
 use crate::ocr::models::{ModelStore, OcrConfig};
 use crate::ocr::{self, OcrEngine};
 use crate::platform;
 
 /// Models are unloaded after this long without captures. Loading takes ~0.3 s and starts when
 /// the capture hotkey is pressed, so it is done before the user finishes selecting.
-const IDLE_UNLOAD_AFTER: Duration = Duration::from_secs(120);
+const IDLE_UNLOAD_AFTER: Duration = Duration::from_secs(60);
 
 enum Job {
     /// A capture has started: load the models while the user is selecting.
     Prepare,
-    Recognize(RgbaImage),
+    /// Recognize the image and send the text back.
+    Recognize(RgbaImage, Sender<Result<String>>),
 }
 
 pub struct OcrWorker {
@@ -34,27 +34,33 @@ impl OcrWorker {
 
         let run = move || {
             let mut engine: Option<OcrEngine> = None;
-            let mut clipboard = Clipboard::default();
 
             while let Some(job) = next_job(&job_rx, &mut engine) {
-                let loaded = match &mut engine {
-                    Some(loaded) => loaded,
-                    None => match OcrEngine::load(&store, &config) {
-                        Ok(loaded) => engine.insert(loaded),
+                if engine.is_none() {
+                    match OcrEngine::load(&store, &config) {
+                        Ok(loaded) => engine = Some(loaded),
                         Err(e) => {
                             log::error!("failed to load OCR models: {e:#}");
+
+                            if let Job::Recognize(_, reply) = job {
+                                let _ = reply.send(Err(e.context("loading the OCR models")));
+                            }
                             continue;
                         }
-                    },
-                };
+                    }
+                }
 
-                let Job::Recognize(image) = job else {
+                let (Some(loaded), Job::Recognize(image, reply)) = (&mut engine, job) else {
                     continue;
                 };
 
-                if let Err(e) = process(loaded, &mut clipboard, &image) {
+                let result = recognize(loaded, &image);
+                if let Err(e) = &result {
                     log::error!("recognition failed: {e:#}");
                 }
+
+                // Nobody is waiting if the overlay was closed in the meantime.
+                let _ = reply.send(result);
             }
         };
 
@@ -71,8 +77,12 @@ impl OcrWorker {
         self.send(Job::Prepare);
     }
 
-    pub fn submit(&self, image: RgbaImage) {
-        self.send(Job::Recognize(image));
+    /// Queues the image for recognition; the text arrives on the returned channel.
+    pub fn recognize(&self, image: RgbaImage) -> Receiver<Result<String>> {
+        let (reply, result) = channel();
+        self.send(Job::Recognize(image, reply));
+
+        result
     }
 
     fn send(&self, job: Job) {
@@ -105,19 +115,10 @@ fn next_job(jobs: &Receiver<Job>, engine: &mut Option<OcrEngine>) -> Option<Job>
     }
 }
 
-/// Recognizes the image and copies the text to the clipboard.
-fn process(engine: &mut OcrEngine, clipboard: &mut Clipboard, image: &RgbaImage) -> Result<()> {
+fn recognize(engine: &mut OcrEngine, image: &RgbaImage) -> Result<String> {
     let started = Instant::now();
     let text = ocr::assemble_text(&engine.recognize(image)?);
     log::info!("recognized {} chars in {:?}", text.chars().count(), started.elapsed());
 
-    if text.is_empty() {
-        log::info!("no text found");
-        return Ok(());
-    }
-
-    clipboard.copy(&text)?;
-    log::info!("copied to clipboard:\n{text}");
-
-    Ok(())
+    Ok(text)
 }

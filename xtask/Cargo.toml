@@ -3,13 +3,14 @@ name = "xtask"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Development tasks for ochco: downloading models and packaging releases"
+description = "Development tasks for ochco: downloading models, rendering the icon and packaging releases"
 license = "MIT"
 publish = false
 
 [dependencies]
 anyhow = "1.0.104"
 flate2 = "1.1"
+resvg = { version = "0.48", default-features = false }
 sha2 = "0.11"
 tar = "0.4"
 ureq = "3.4"

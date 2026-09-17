@@ -3,12 +3,11 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::Result;
-use image::RgbaImage;
 
+use crate::clipboard::Clipboard;
 use crate::config::Config;
 use crate::hotkey::GlobalHotkey;
 use crate::ocr::models::{ModelStore, OcrConfig};
-use crate::ocr::{self, OcrEngine};
 use crate::platform::{EventLoop, Waker};
 use crate::shortcut::Shortcut;
 use crate::tray::{Tray, TrayAction};
@@ -46,6 +45,8 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
     };
 
     let worker = OcrWorker::spawn(store, ocr_config);
+    // Kept open for the app's lifetime: on Linux the copied text lives only as long as this handle.
+    let mut clipboard = Clipboard::default();
 
     let mut config = Config::load();
 
@@ -64,12 +65,17 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
     while let Some(event) = event_loop.next(&events) {
         match event {
             AppEvent::Capture => {
-                worker.prepare();
+                let copy = &mut |text: &str| {
+                    clipboard.copy(text)?;
+                    log::info!(
+                        "copied to clipboard:
+{text}"
+                    );
+                    Ok(())
+                };
 
-                match capture_selection() {
-                    Ok(Some(region)) => worker.submit(region),
-                    Ok(None) => log::debug!("selection cancelled"),
-                    Err(e) => log::error!("capture failed: {e:#}"),
+                if let Err(e) = capture_text(&worker, copy) {
+                    log::error!("capture failed: {e:#}");
                 }
 
                 drop_stale_requests(&events, &sender);
@@ -88,33 +94,36 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
     }
 }
 
-/// Captures a region, recognizes it, copies the text and exits. Meant to be bound to a
-/// system-wide shortcut on desktops where the app cannot register one itself (Wayland).
+/// Captures a region, shows the recognized text and exits once it is copied or the overlay is
+/// closed. Meant to be bound to a system-wide shortcut on desktops where the app cannot register
+/// one itself (Wayland).
 pub fn capture_once(store: ModelStore, config: OcrConfig) -> Result<()> {
-    // Loading takes a fraction of a second, so it runs while the user is selecting.
-    let loader = std::thread::spawn(move || OcrEngine::load(&store, &config));
+    let worker = OcrWorker::spawn(store, config);
+    let mut copied = None;
 
-    let Some(region) = capture_selection()? else {
-        log::info!("selection cancelled");
+    capture_text(&worker, &mut |text| {
+        copied = Some(text.to_owned());
+        Ok(())
+    })?;
+
+    // Unloads the models before possibly waiting for the clipboard below.
+    drop(worker);
+
+    let Some(text) = copied else {
+        log::info!("closed without copying");
         return Ok(());
     };
-
-    let mut engine = loader.join().map_err(|_| anyhow::anyhow!("model loading panicked"))??;
-    let text = ocr::assemble_text(&engine.recognize(&region)?);
-    drop(engine);
-
-    if text.is_empty() {
-        log::info!("no text found");
-        return Ok(());
-    }
 
     log::info!("copied to clipboard:\n{text}");
     clipboard::copy_before_exit(&text)
 }
 
-fn capture_selection() -> Result<Option<RgbaImage>> {
+/// Shows the overlay over the active monitor; the models load while the user is selecting.
+fn capture_text(worker: &OcrWorker, copy: overlay::CopyText<'_>) -> Result<()> {
+    worker.prepare();
+
     let shot = capture::capture_active_monitor()?;
-    overlay::select_region(&shot)
+    overlay::capture_text(&shot, &|image| worker.recognize(image), copy)
 }
 
 /// Drops capture and settings requests that arrived while a window was open; keeps the rest.
