@@ -51,8 +51,8 @@ the models instead, e.g. `peekr --det pp-ocrv5-mobile --rec pp-ocrv5-eslav`.
 - **Tray icon.** Uses the StatusNotifierItem protocol (KDE, Cinnamon, XFCE, most tiling setups). On
   GNOME it needs the AppIndicator extension; without it peekr still runs and captures on the hotkey.
 - **Screen capture on Wayland** goes through the GNOME Shell or xdg-desktop-portal screenshot APIs
-  and needs XWayland to list monitors. Without a cursor position on Wayland, the primary monitor
-  is captured.
+  and needs XWayland to list monitors. Wayland doesn't tell apps where the cursor is, so the
+  overlay opens on every monitor: select the text on whichever one it is.
 - **Clipboard.** Linux clipboards live in the process that copied the text, so `--capture` keeps
   running in the background until something else is copied (a clipboard manager takes over
   right away).

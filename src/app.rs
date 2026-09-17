@@ -118,12 +118,13 @@ pub fn capture_once(store: ModelStore, config: OcrConfig) -> Result<()> {
     clipboard::copy_before_exit(&text)
 }
 
-/// Shows the overlay over the active monitor; the models load while the user is selecting.
+/// Shows the overlay over the active monitor (every monitor on Wayland); the models load while
+/// the user is selecting.
 fn capture_text(worker: &OcrWorker, copy: overlay::CopyText<'_>) -> Result<()> {
     worker.prepare();
 
-    let shot = capture::capture_active_monitor()?;
-    overlay::capture_text(&shot, &|image| worker.recognize(image), copy)
+    let screens = capture::capture_screens()?;
+    overlay::capture_text(&screens, &|image| worker.recognize(image), copy)
 }
 
 /// Drops capture and settings requests that arrived while a window was open; keeps the rest.

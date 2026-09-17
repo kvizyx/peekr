@@ -18,11 +18,13 @@ pub fn edit_hotkey(current: Shortcut, apply: &mut dyn FnMut(Shortcut) -> Result<
                 .inspect_err(|e| log::warn!("invalid window icon: {e}"))
                 .ok();
 
-            window::centered(event_loop, WINDOW_SIZE)
+            let window = window::centered(event_loop, WINDOW_SIZE)
                 .with_title("Settings")
                 .with_resizable(false)
                 .with_enabled_buttons(WindowButtons::CLOSE | WindowButtons::MINIMIZE)
-                .with_window_icon(icon)
+                .with_window_icon(icon);
+
+            vec![window]
         },
         |_| SettingsApp {
             hotkey: current,
@@ -50,7 +52,7 @@ struct SettingsApp<'a> {
 }
 
 impl window::App for SettingsApp<'_> {
-    fn ui(&mut self, ui: &mut egui::Ui) {
+    fn ui(&mut self, _window: usize, ui: &mut egui::Ui) {
         self.track_super_key(ui.ctx());
 
         if self.recording {

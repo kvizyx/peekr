@@ -45,16 +45,6 @@ pub fn cursor_position() -> Option<(i32, i32)> {
     Some((i32::from(pointer.root_x), i32::from(pointer.root_y)))
 }
 
-/// Index of the monitor in the order winit enumerates monitors.
-///
-/// Both xcap and winit list monitors in the order the display server reports them, so the
-/// position in xcap's list matches winit's.
-pub fn monitor_index(monitor: &xcap::Monitor) -> Option<usize> {
-    let id = monitor.id().ok()?;
-
-    xcap::Monitor::all().ok()?.iter().position(|m| m.id().ok() == Some(id))
-}
-
 fn is_wayland_session() -> bool {
     match std::env::var("XDG_SESSION_TYPE") {
         Ok(session) if !session.is_empty() => session == "wayland",

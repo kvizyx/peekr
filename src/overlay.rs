@@ -12,7 +12,7 @@ use egui::{
     Vec2, ViewportCommand, pos2, vec2,
 };
 use image::RgbaImage;
-use winit::event_loop::ActiveEventLoop;
+use winit::monitor::MonitorHandle;
 use winit::window::{Window, WindowAttributes, WindowLevel};
 
 use crate::capture::Screenshot;
@@ -54,33 +54,52 @@ pub type Recognize<'a> = &'a dyn Fn(RgbaImage) -> Receiver<Result<String>>;
 /// Puts the text on the clipboard.
 pub type CopyText<'a> = &'a mut dyn FnMut(&str) -> Result<()>;
 
-/// Shows the overlay until the user copies the recognized text or cancels.
-pub fn capture_text(shot: &Screenshot, recognize: Recognize<'_>, copy: CopyText<'_>) -> Result<()> {
+/// Shows the overlay, one window per screenshot, until the user copies the recognized text or
+/// cancels.
+pub fn capture_text(screens: &[Screenshot], recognize: Recognize<'_>, copy: CopyText<'_>) -> Result<()> {
     let started = Instant::now();
 
     window::run(
         |event_loop| {
-            let attributes = Window::default_attributes()
-                .with_title("peekr")
-                .with_decorations(false)
-                .with_window_level(WindowLevel::AlwaysOnTop);
+            let monitors: Vec<_> = event_loop.available_monitors().collect();
 
-            cover_monitor(attributes, event_loop, shot)
+            screens
+                .iter()
+                .enumerate()
+                .map(|(index, shot)| {
+                    let attributes = Window::default_attributes()
+                        .with_title("peekr")
+                        .with_decorations(false)
+                        .with_window_level(WindowLevel::AlwaysOnTop);
+
+                    cover_monitor(attributes, &monitors, screens.len(), index, shot)
+                })
+                .collect()
         },
-        |ctx| {
-            ctx.set_visuals(egui::Visuals::dark());
+        |contexts| {
+            let views = contexts
+                .iter()
+                .zip(screens)
+                .map(|(ctx, shot)| {
+                    ctx.set_visuals(egui::Visuals::dark());
 
-            let size = [shot.image.width() as usize, shot.image.height() as usize];
-            let pixels = egui::ColorImage::from_rgba_unmultiplied(size, shot.image.as_raw());
-            let texture = ctx.load_texture("screenshot", pixels, TextureOptions::NEAREST);
-            log::debug!("overlay window created in {:?}", started.elapsed());
+                    let size = [shot.image.width() as usize, shot.image.height() as usize];
+                    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, shot.image.as_raw());
+
+                    ScreenView {
+                        texture: ctx.load_texture("screenshot", pixels, TextureOptions::NEAREST),
+                        image: &shot.image,
+                    }
+                })
+                .collect();
+            log::debug!("overlay windows created in {:?}", started.elapsed());
 
             Overlay {
-                texture,
-                image: &shot.image,
-                stage: Stage::Selecting { drag_start: None },
+                screens: views,
+                stage: Stage::Selecting { drag: None },
                 card: None,
                 copy_error: None,
+                repaint: vec![false; contexts.len()],
                 recognize,
                 copy,
             }
@@ -91,7 +110,13 @@ pub fn capture_text(shot: &Screenshot, recognize: Recognize<'_>, copy: CopyText<
 /// Makes the window cover the monitor the screenshot was taken from: a plain window of the
 /// monitor's size, as switching the display in and out of fullscreen mode makes it blink.
 #[cfg(windows)]
-fn cover_monitor(attributes: WindowAttributes, _: &ActiveEventLoop, shot: &Screenshot) -> WindowAttributes {
+fn cover_monitor(
+    attributes: WindowAttributes,
+    _: &[MonitorHandle],
+    _: usize,
+    _: usize,
+    shot: &Screenshot,
+) -> WindowAttributes {
     use winit::dpi::{PhysicalPosition, PhysicalSize};
     use winit::platform::windows::WindowAttributesExtWindows as _;
 
@@ -103,43 +128,121 @@ fn cover_monitor(attributes: WindowAttributes, _: &ActiveEventLoop, shot: &Scree
 
 /// Makes the window cover the monitor the screenshot was taken from. Wayland does not let
 /// clients position windows, so fullscreen is the only way to get there.
+///
+/// xcap and winit list monitors in different orders, so the monitor is found by its output name,
+/// then by position, and only then by index when both see the same number of monitors.
 #[cfg(not(windows))]
-fn cover_monitor(attributes: WindowAttributes, event_loop: &ActiveEventLoop, shot: &Screenshot) -> WindowAttributes {
+fn cover_monitor(
+    attributes: WindowAttributes,
+    monitors: &[MonitorHandle],
+    screen_count: usize,
+    index: usize,
+    shot: &Screenshot,
+) -> WindowAttributes {
+    use winit::dpi::PhysicalPosition;
     use winit::window::Fullscreen;
 
-    let monitor = event_loop.available_monitors().nth(shot.monitor_index);
+    log::debug!(
+        "captured monitor {:?} at {:?}; window system monitors: {:?}",
+        shot.monitor_name,
+        shot.origin,
+        monitors.iter().map(|m| (m.name(), m.position())).collect::<Vec<_>>()
+    );
 
-    attributes.with_fullscreen(Some(Fullscreen::Borderless(monitor)))
+    let monitor = monitors
+        .iter()
+        .find(|m| {
+            m.name()
+                .is_some_and(|name| shot.monitor_name.as_deref() == Some(&*name))
+        })
+        .or_else(|| {
+            monitors.iter().find(|m| {
+                let position = m.position();
+                (position.x, position.y) == shot.origin
+            })
+        })
+        .or_else(|| (monitors.len() == screen_count).then(|| monitors.get(index)).flatten())
+        .cloned();
+
+    if monitor.is_none() {
+        log::warn!(
+            "no monitor matches {:?} at {:?}; the overlay opens on the current one",
+            shot.monitor_name,
+            shot.origin
+        );
+    }
+
+    // X11 window managers put a fullscreen window on the monitor it was mapped on, so it starts
+    // out there as well.
+    attributes
+        .with_position(PhysicalPosition::new(shot.origin.0, shot.origin.1))
+        .with_fullscreen(Some(Fullscreen::Borderless(monitor)))
 }
 
+/// One overlay window: a monitor's screenshot.
+struct ScreenView<'a> {
+    texture: egui::TextureHandle,
+    image: &'a RgbaImage,
+}
+
+/// Progress of the capture, shared by all windows. `screen` is the window the selection is on.
 enum Stage {
     Selecting {
-        drag_start: Option<Pos2>,
+        drag: Option<(usize, Pos2)>,
     },
     Recognizing {
+        screen: usize,
         selection: Rect,
         result: Receiver<Result<String>>,
     },
     Done {
+        screen: usize,
         selection: Rect,
         /// The recognized text, or why recognition failed.
         result: Result<String, String>,
     },
 }
 
+impl Stage {
+    /// The selection on the given window; a selection being dragged ends at the cursor.
+    fn selection(&self, screen: usize, cursor: Option<Pos2>) -> Option<Rect> {
+        match *self {
+            Self::Selecting {
+                drag: Some((on, start)),
+            } if on == screen => cursor.map(|end| Rect::from_two_pos(start, end)),
+            Self::Recognizing {
+                screen: on, selection, ..
+            }
+            | Self::Done {
+                screen: on, selection, ..
+            } if on == screen => Some(selection),
+            _ => None,
+        }
+    }
+
+    /// The window the selection is on, if there is one.
+    fn screen(&self) -> Option<usize> {
+        match *self {
+            Self::Selecting { drag } => drag.map(|(on, _)| on),
+            Self::Recognizing { screen, .. } | Self::Done { screen, .. } => Some(screen),
+        }
+    }
+}
+
 struct Overlay<'a> {
-    texture: egui::TextureHandle,
-    image: &'a RgbaImage,
+    screens: Vec<ScreenView<'a>>,
     stage: Stage,
-    /// Where the result card was drawn last frame, so clicks on it don't start a new selection.
-    card: Option<Rect>,
+    /// Window and area of the result card last frame, so clicks on it don't start a new selection.
+    card: Option<(usize, Rect)>,
     copy_error: Option<String>,
+    /// Windows to draw again because the shared stage changed while another window was drawn.
+    repaint: Vec<bool>,
     recognize: Recognize<'a>,
     copy: CopyText<'a>,
 }
 
 impl window::App for Overlay<'_> {
-    fn ui(&mut self, ui: &mut egui::Ui) {
+    fn ui(&mut self, index: usize, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let screen = ui.max_rect();
 
@@ -162,70 +265,88 @@ impl window::App for Overlay<'_> {
         let over_card = self
             .card
             .zip(cursor)
-            .is_some_and(|(card, cursor)| card.contains(cursor));
+            .is_some_and(|((on, card), cursor)| on == index && card.contains(cursor));
         if !over_card {
             ctx.set_cursor_icon(CursorIcon::Crosshair);
         }
 
         // Dragging anywhere but on the card starts over, dropping the previous result.
         if pressed && !over_card {
-            self.stage = Stage::Selecting { drag_start: cursor };
+            self.set_stage(Stage::Selecting {
+                drag: cursor.map(|start| (index, start)),
+            });
             self.card = None;
             self.copy_error = None;
         }
 
-        let selection = match &self.stage {
-            Stage::Selecting { drag_start } => drag_start
-                .zip(cursor)
-                .map(|(start, end)| Rect::from_two_pos(start, end).intersect(screen))
-                // Whole physical pixels, so the dimmed rectangles around the selection tile
-                // without seams or overlapping edges.
-                .map(|sel| sel.round_to_pixels(ctx.pixels_per_point())),
-            Stage::Recognizing { selection, .. } | Stage::Done { selection, .. } => Some(*selection),
-        };
+        let selection = self
+            .stage
+            .selection(index, cursor)
+            .map(|sel| sel.intersect(screen))
+            // Whole physical pixels, so the dimmed rectangles around the selection tile without
+            // seams or overlapping edges.
+            .map(|sel| sel.round_to_pixels(ctx.pixels_per_point()));
         let selecting = matches!(self.stage, Stage::Selecting { .. });
 
         let painter = ui.painter();
-        self.paint_screenshot(painter, screen, selection, selecting);
+        self.paint_screenshot(index, painter, screen, selection, selecting);
 
         if selecting {
             paint_hint(painter, screen);
 
-            if released {
-                self.finish_selection(screen, selection);
+            if released && self.stage.screen() == Some(index) {
+                self.finish_selection(index, screen, selection);
             }
         }
 
-        if matches!(self.stage, Stage::Recognizing { .. }) {
+        if matches!(self.stage, Stage::Recognizing { .. }) && self.stage.screen() == Some(index) {
             ctx.request_repaint_after(POLL_INTERVAL);
         }
 
-        let copy_clicked = self.show_card(&ctx, screen);
+        let copy_clicked = self.show_card(index, &ctx, screen);
         self.copy_text(&ctx, copy_clicked || confirm);
+    }
+
+    fn take_repaint(&mut self, window: usize) -> bool {
+        self.repaint.get_mut(window).is_some_and(std::mem::take)
     }
 }
 
 impl Overlay<'_> {
+    /// Changes the shared stage and redraws every window, as each shows part of it.
+    fn set_stage(&mut self, stage: Stage) {
+        self.stage = stage;
+        self.repaint.fill(true);
+    }
+
     /// Sends the selected region for recognition, or keeps selecting after an accidental click.
-    fn finish_selection(&mut self, screen: Rect, selection: Option<Rect>) {
-        let region = selection.map(|sel| (sel, self.to_pixels(screen, sel)));
+    fn finish_selection(&mut self, index: usize, screen: Rect, selection: Option<Rect>) {
+        let region = selection.map(|sel| (sel, self.to_pixels(index, screen, sel)));
 
         let Some((selection, rect)) =
             region.filter(|(_, r)| r.width >= MIN_SELECTION_PX && r.height >= MIN_SELECTION_PX)
         else {
-            self.stage = Stage::Selecting { drag_start: None };
+            self.set_stage(Stage::Selecting { drag: None });
             return;
         };
 
-        let image = image::imageops::crop_imm(self.image, rect.x, rect.y, rect.width, rect.height).to_image();
-        self.stage = Stage::Recognizing {
+        let image = self.screens[index].image;
+        let region = image::imageops::crop_imm(image, rect.x, rect.y, rect.width, rect.height).to_image();
+
+        self.set_stage(Stage::Recognizing {
+            screen: index,
             selection,
-            result: (self.recognize)(image),
-        };
+            result: (self.recognize)(region),
+        });
     }
 
     fn poll_recognition(&mut self) {
-        let Stage::Recognizing { selection, result } = &self.stage else {
+        let Stage::Recognizing {
+            screen,
+            selection,
+            result,
+        } = &self.stage
+        else {
             return;
         };
 
@@ -235,10 +356,11 @@ impl Overlay<'_> {
             Err(TryRecvError::Disconnected) => Err("Recognition failed: the OCR worker stopped".to_owned()),
         };
 
-        self.stage = Stage::Done {
+        self.set_stage(Stage::Done {
+            screen: *screen,
             selection: *selection,
             result,
-        };
+        });
     }
 
     /// Copies the recognized text and closes the overlay when the user asks for it.
@@ -256,12 +378,17 @@ impl Overlay<'_> {
         }
     }
 
-    /// Draws the card with the recognition progress or result. Returns whether Copy was clicked.
-    fn show_card(&mut self, ctx: &egui::Context, screen: Rect) -> bool {
+    /// Draws the card with the recognition progress or result when the selection is on this
+    /// window. Returns whether Copy was clicked.
+    fn show_card(&mut self, index: usize, ctx: &egui::Context, screen: Rect) -> bool {
+        if self.stage.screen() != Some(index) {
+            return false;
+        }
+
         let (selection, result) = match &self.stage {
             Stage::Selecting { .. } => return false,
             Stage::Recognizing { selection, .. } => (*selection, None),
-            Stage::Done { selection, result } => (*selection, Some(result)),
+            Stage::Done { selection, result, .. } => (*selection, Some(result)),
         };
 
         let width = selection
@@ -302,14 +429,15 @@ impl Overlay<'_> {
                 });
             });
 
-        self.card = Some(response.response.rect);
+        self.card = Some((index, response.response.rect));
 
         copy_clicked
     }
 
-    /// Converts a selection in window points into screenshot pixels.
-    fn to_pixels(&self, screen: Rect, selection: Rect) -> PixelRect {
-        let (image_w, image_h) = (self.image.width() as f32, self.image.height() as f32);
+    /// Converts a selection in window points into pixels of the window's screenshot.
+    fn to_pixels(&self, index: usize, screen: Rect, selection: Rect) -> PixelRect {
+        let image = self.screens[index].image;
+        let (image_w, image_h) = (image.width() as f32, image.height() as f32);
         let scale = Vec2::new(image_w / screen.width(), image_h / screen.height());
 
         let to_px = |pos: Pos2| {
@@ -331,9 +459,16 @@ impl Overlay<'_> {
     }
 
     /// Draws the frozen screenshot, dimmed everywhere except the selection.
-    fn paint_screenshot(&self, painter: &Painter, screen: Rect, selection: Option<Rect>, selecting: bool) {
+    fn paint_screenshot(
+        &self,
+        index: usize,
+        painter: &Painter,
+        screen: Rect,
+        selection: Option<Rect>,
+        selecting: bool,
+    ) {
         let full_uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-        painter.image(self.texture.id(), screen, full_uv, Color32::WHITE);
+        painter.image(self.screens[index].texture.id(), screen, full_uv, Color32::WHITE);
 
         let Some(sel) = selection else {
             painter.rect_filled(screen, 0.0, DIM);
@@ -356,7 +491,7 @@ impl Overlay<'_> {
             return;
         }
 
-        let size = self.to_pixels(screen, sel);
+        let size = self.to_pixels(index, screen, sel);
         let label = format!("{} × {}", size.width, size.height);
         let label_pos = Pos2::new(sel.min.x, (sel.min.y - 4.0).max(screen.min.y + 16.0));
         painter.text(
