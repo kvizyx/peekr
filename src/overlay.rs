@@ -289,7 +289,7 @@ impl window::App for Overlay<'_> {
         let selecting = matches!(self.stage, Stage::Selecting { .. });
 
         let painter = ui.painter();
-        self.paint_screenshot(index, painter, screen, selection, selecting);
+        self.paint_screenshot(index, painter, screen, selection);
 
         if selecting {
             paint_hint(painter, screen);
@@ -459,14 +459,7 @@ impl Overlay<'_> {
     }
 
     /// Draws the frozen screenshot, dimmed everywhere except the selection.
-    fn paint_screenshot(
-        &self,
-        index: usize,
-        painter: &Painter,
-        screen: Rect,
-        selection: Option<Rect>,
-        selecting: bool,
-    ) {
+    fn paint_screenshot(&self, index: usize, painter: &Painter, screen: Rect, selection: Option<Rect>) {
         let full_uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         painter.image(self.screens[index].texture.id(), screen, full_uv, Color32::WHITE);
 
@@ -486,21 +479,6 @@ impl Overlay<'_> {
         }
 
         painter.rect_stroke(sel, 0.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
-
-        if !selecting {
-            return;
-        }
-
-        let size = self.to_pixels(index, screen, sel);
-        let label = format!("{} × {}", size.width, size.height);
-        let label_pos = Pos2::new(sel.min.x, (sel.min.y - 4.0).max(screen.min.y + 16.0));
-        painter.text(
-            label_pos,
-            Align2::LEFT_BOTTOM,
-            label,
-            FontId::proportional(13.0),
-            Color32::WHITE,
-        );
     }
 }
 
