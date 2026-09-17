@@ -1,4 +1,13 @@
-# Ochco
+<h1 align="center">Ochco</h1>
+
+<p align="center">
+  <img src="assets/icon.svg" width="160" alt="Ochco icon: a hand-drawn magnifying glass">
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <a href="https://github.com/kvizyx/ochco/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kvizyx/ochco/ci.yml?branch=main&label=CI&logo=github" alt="CI"></a>
+</p>
 
 Cross-platform OCR utility that can extract text from screen and images. Recognition runs fully offline on [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) models
 (PP-OCRv6 and PP-OCRv5) via ONNX Runtime.
