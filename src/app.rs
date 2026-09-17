@@ -21,7 +21,6 @@ enum AppEvent {
     Capture,
     OpenSettings,
     Quit,
-    Status(String),
 }
 
 #[derive(Clone)]
@@ -46,10 +45,7 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
         waker: event_loop.waker(),
     };
 
-    let worker = OcrWorker::spawn(store, ocr_config, {
-        let sender = sender.clone();
-        move |status| sender.send(AppEvent::Status(status))
-    });
+    let worker = OcrWorker::spawn(store, ocr_config);
 
     let mut config = Config::load();
 
@@ -67,12 +63,6 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
 
     while let Some(event) = event_loop.next(&events) {
         match event {
-            AppEvent::Quit => break,
-            AppEvent::Status(status) => {
-                if let Some(tray) = &tray {
-                    tray.set_status(&status);
-                }
-            }
             AppEvent::Capture => {
                 worker.prepare();
 
@@ -93,6 +83,7 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
 
                 drop_stale_requests(&events, &sender);
             }
+            AppEvent::Quit => break,
         }
     }
 }

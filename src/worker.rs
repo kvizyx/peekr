@@ -14,8 +14,6 @@ use crate::ocr::models::{ModelStore, OcrConfig};
 use crate::ocr::{self, OcrEngine};
 use crate::platform;
 
-/// Characters of the recognized text shown in the tray tooltip.
-const PREVIEW_CHARS: usize = 40;
 /// Models are unloaded after this long without captures. Loading takes ~0.3 s and starts when
 /// the capture hotkey is pressed, so it is done before the user finishes selecting.
 const IDLE_UNLOAD_AFTER: Duration = Duration::from_secs(120);
@@ -31,8 +29,7 @@ pub struct OcrWorker {
 }
 
 impl OcrWorker {
-    /// `report` receives a short status line after each job; it is called on the worker thread.
-    pub fn spawn(store: ModelStore, config: OcrConfig, report: impl Fn(String) + Send + 'static) -> Self {
+    pub fn spawn(store: ModelStore, config: OcrConfig) -> Self {
         let (jobs, job_rx) = channel();
 
         let run = move || {
@@ -46,7 +43,6 @@ impl OcrWorker {
                         Ok(loaded) => engine.insert(loaded),
                         Err(e) => {
                             log::error!("failed to load OCR models: {e:#}");
-                            report("failed to load models".into());
                             continue;
                         }
                     },
@@ -56,12 +52,8 @@ impl OcrWorker {
                     continue;
                 };
 
-                match process(loaded, &mut clipboard, &image) {
-                    Ok(msg) => report(msg),
-                    Err(e) => {
-                        log::error!("recognition failed: {e:#}");
-                        report("recognition failed".into());
-                    }
+                if let Err(e) = process(loaded, &mut clipboard, &image) {
+                    log::error!("recognition failed: {e:#}");
                 }
             }
         };
@@ -113,19 +105,19 @@ fn next_job(jobs: &Receiver<Job>, engine: &mut Option<OcrEngine>) -> Option<Job>
     }
 }
 
-/// Recognizes the image, copies the text to the clipboard and returns a status line.
-fn process(engine: &mut OcrEngine, clipboard: &mut Clipboard, image: &RgbaImage) -> Result<String> {
+/// Recognizes the image and copies the text to the clipboard.
+fn process(engine: &mut OcrEngine, clipboard: &mut Clipboard, image: &RgbaImage) -> Result<()> {
     let started = Instant::now();
     let text = ocr::assemble_text(&engine.recognize(image)?);
     log::info!("recognized {} chars in {:?}", text.chars().count(), started.elapsed());
 
     if text.is_empty() {
-        return Ok("no text found".into());
+        log::info!("no text found");
+        return Ok(());
     }
 
     clipboard.copy(&text)?;
     log::info!("copied to clipboard:\n{text}");
 
-    let preview: String = text.chars().take(PREVIEW_CHARS).collect();
-    Ok(format!("copied: {preview}"))
+    Ok(())
 }

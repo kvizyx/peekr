@@ -16,7 +16,8 @@ pub enum TrayAction {
 }
 
 pub struct Tray {
-    icon: TrayIcon,
+    /// Removed from the tray when dropped.
+    _icon: TrayIcon,
     capture: MenuItem,
 }
 
@@ -24,7 +25,7 @@ impl Tray {
     /// Creates the tray icon; `on_action` is called from the thread that delivers tray events.
     pub fn new(hotkey: Option<Shortcut>, on_action: impl Fn(TrayAction) + Send + Sync + 'static) -> Result<Self> {
         let capture = MenuItem::new(capture_label(hotkey), true, None);
-        let settings = MenuItem::new("Settings…", true, None);
+        let settings = MenuItem::new("Settings", true, None);
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
@@ -32,7 +33,7 @@ impl Tray {
 
         let icon = Icon::from_rgba(icon::rgba(), icon::SIZE, icon::SIZE)?;
         let icon = TrayIconBuilder::new()
-            .with_tooltip(tooltip(hotkey))
+            .with_tooltip(APP_NAME)
             .with_icon(icon)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
@@ -65,23 +66,12 @@ impl Tray {
             }
         }));
 
-        Ok(Self { icon, capture })
+        Ok(Self { _icon: icon, capture })
     }
 
     /// Shows the active hotkey, or `None` when no hotkey is registered.
     pub fn set_hotkey(&self, hotkey: Option<Shortcut>) {
         self.capture.set_text(capture_label(hotkey));
-        self.set_tooltip(&tooltip(hotkey));
-    }
-
-    pub fn set_status(&self, status: &str) {
-        self.set_tooltip(&format!("{APP_NAME} — {status}"));
-    }
-
-    fn set_tooltip(&self, tooltip: &str) {
-        if let Err(e) = self.icon.set_tooltip(Some(tooltip)) {
-            log::warn!("failed to update tray tooltip: {e}");
-        }
     }
 }
 
@@ -89,12 +79,5 @@ fn capture_label(hotkey: Option<Shortcut>) -> String {
     match hotkey {
         Some(hotkey) => format!("Capture text\t{hotkey}"),
         None => "Capture text".to_owned(),
-    }
-}
-
-fn tooltip(hotkey: Option<Shortcut>) -> String {
-    match hotkey {
-        Some(hotkey) => format!("{APP_NAME} — {hotkey}"),
-        None => APP_NAME.to_owned(),
     }
 }
