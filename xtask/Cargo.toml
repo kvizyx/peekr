@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 flate2 = "1.1"
+image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 resvg = { version = "0.48", default-features = false }
 sha2 = "0.11"
 tar = "0.4"

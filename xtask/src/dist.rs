@@ -30,6 +30,60 @@ struct Entry {
 }
 
 pub fn package(root: &Path) -> Result<()> {
+    let build = build(root)?;
+
+    let archive = if cfg!(windows) {
+        let archive = build.dist_dir.join(format!("{}.zip", build.prefix));
+        write_zip(&archive, &build.prefix, &build.entries)?;
+        archive
+    } else {
+        let archive = build.dist_dir.join(format!("{}.tar.gz", build.prefix));
+        write_tar_gz(&archive, &build.prefix, &build.entries)?;
+        archive
+    };
+
+    let size = fs::metadata(&archive)?.len() as f64 / f64::from(1 << 20);
+    eprintln!(
+        "packed {} files into {} ({size:.1} MB)",
+        build.entries.len(),
+        archive.display()
+    );
+
+    Ok(())
+}
+
+/// A release build, with everything that goes into a package.
+pub struct Build {
+    pub version: String,
+    pub prefix: String,
+    pub dist_dir: PathBuf,
+    entries: Vec<Entry>,
+}
+
+impl Build {
+    /// Copies the files into `target/dist/<prefix>/`, the layout they are installed in.
+    pub fn stage(&self) -> Result<PathBuf> {
+        let stage_dir = self.dist_dir.join(&self.prefix);
+        if stage_dir.exists() {
+            fs::remove_dir_all(&stage_dir).with_context(|| format!("clearing {}", stage_dir.display()))?;
+        }
+
+        for entry in &self.entries {
+            let destination = stage_dir.join(&entry.name);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            fs::copy(&entry.source, &destination).with_context(|| format!("copying {}", entry.source.display()))?;
+        }
+
+        eprintln!("staged {} files in {}", self.entries.len(), stage_dir.display());
+
+        Ok(stage_dir)
+    }
+}
+
+pub fn build(root: &Path) -> Result<Build> {
     let version = package_version(root)?;
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let prefix = format!("{PACKAGE}-{version}-{platform}");
@@ -51,24 +105,12 @@ pub fn package(root: &Path) -> Result<()> {
         .join(format!("{PACKAGE}{}", std::env::consts::EXE_SUFFIX));
     let entries = collect_entries(root, binary, third_party_licenses)?;
 
-    let archive = if cfg!(windows) {
-        let archive = dist_dir.join(format!("{prefix}.zip"));
-        write_zip(&archive, &prefix, &entries)?;
-        archive
-    } else {
-        let archive = dist_dir.join(format!("{prefix}.tar.gz"));
-        write_tar_gz(&archive, &prefix, &entries)?;
-        archive
-    };
-
-    let size = fs::metadata(&archive)?.len() as f64 / f64::from(1 << 20);
-    eprintln!(
-        "packed {} files into {} ({size:.1} MB)",
-        entries.len(),
-        archive.display()
-    );
-
-    Ok(())
+    Ok(Build {
+        version,
+        prefix,
+        dist_dir,
+        entries,
+    })
 }
 
 fn cargo() -> Command {

@@ -74,12 +74,22 @@ jobs:
       - name: Build the archive
         run: cargo xtask dist
 
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup --no-progress -y
+          }
+          cargo xtask installer
+
       - uses: actions/upload-artifact@v7
         with:
           name: peekr-${{ matrix.platform }}
           path: |
             target/dist/*.zip
             target/dist/*.tar.gz
+            target/dist/*-setup.exe
           if-no-files-found: error
 
   release:

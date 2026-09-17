@@ -14,15 +14,20 @@ Cross-platform OCR utility that can extract text from screen and images. Recogni
 
 ## Installation
 
-Download the archive for your system from
-[Releases](https://github.com/kvizyx/peekr/releases), unpack it anywhere and run `peekr`. The
-archive already contains the models, so everything works offline. Keep the `models` directory next
-to the executable.
+Grab the build for your system from [Releases](https://github.com/kvizyx/peekr/releases). Every
+download already contains the models, so everything works offline.
 
-| System | Archive | Requirements |
+| System | Download | Requirements |
 | --- | --- | --- |
-| Windows | `peekr-<version>-windows-x86_64.zip` | Windows 10 or 11, x64 |
+| Windows | `peekr-<version>-windows-x86_64-setup.exe` (installer)<br>`peekr-<version>-windows-x86_64.zip` (portable) | Windows 10 or 11, x64 |
 | Linux | `peekr-<version>-linux-x86_64.tar.gz`<br>`peekr-<version>-linux-aarch64.tar.gz` | x86_64 or ARM64 with glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39 or newer) |
+
+**Installer.** Run it and follow the wizard. It installs for the current user, so it needs no
+administrator rights, adds a Start menu shortcut, can start Peekr with Windows, and uninstalls from
+**Settings → Apps**. The installer is not code-signed yet, so Windows SmartScreen shows a warning:
+choose **More info → Run anyway**.
+
+**Archives.** Unpack anywhere and run `peekr`; keep the `models` directory next to the executable.
 
 ## Usage
 
@@ -77,6 +82,19 @@ Build and run:
 
 ```bash
 cargo run --release
+```
+
+Package a release archive into `target/dist` (needs
+[cargo-about](https://github.com/EmbarkStudios/cargo-about)):
+
+```bash
+cargo xtask dist
+```
+
+Build the Windows installer, which also needs [Inno Setup 6](https://jrsoftware.org/isdl.php):
+
+```bash
+cargo xtask installer
 ```
 
 ## License

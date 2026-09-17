@@ -4,6 +4,7 @@
 
 mod dist;
 mod icon;
+mod installer;
 mod models;
 
 use std::path::{Path, PathBuf};
@@ -13,10 +14,11 @@ const USAGE: &str = "\
 usage: cargo xtask <task>
 
 tasks:
-  models   download the OCR models into ./models (skips files that are up to date)
-  icon     render assets/icon.svg into assets/icon-32.png, which the app embeds
-  dist     build a release archive for this platform into target/dist
-           (needs downloaded models and cargo-about: cargo install cargo-about --features cli)";
+  models    download the OCR models into ./models (skips files that are up to date)
+  icon      render assets/icon.svg into assets/icon-32.png (embedded in the app) and icon.ico
+  dist      build a release archive for this platform into target/dist
+            (needs downloaded models and cargo-about: cargo install cargo-about --features cli)
+  installer build the Windows installer into target/dist (needs Inno Setup 6)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -25,6 +27,7 @@ fn main() -> ExitCode {
         ["models"] => models::download(&project_root().join("models")),
         ["icon"] => icon::render(project_root()),
         ["dist"] => dist::package(project_root()),
+        ["installer"] => installer::build(project_root()),
         [] | ["help" | "--help" | "-h"] => {
             eprintln!("{USAGE}");
             return ExitCode::SUCCESS;
