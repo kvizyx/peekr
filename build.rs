@@ -1,14 +1,20 @@
-//! Embeds the icon and version information into the Windows executable.
+fn main() {
+    // Without this, Cargo reruns the script whenever any file in the package changes.
+    println!("cargo::rerun-if-changed=build.rs");
 
-use std::fs;
+    // Embed the icon and version information into the Windows executable.
+    #[cfg(windows)]
+    embed_resources().expect("windows resources are embedded");
+}
 
-const ICON: &str = "assets/icon.ico";
+#[cfg(windows)]
+fn embed_resources() -> std::io::Result<()> {
+    const ICON: &str = "assets/icon.ico";
 
-fn main() -> std::io::Result<()> {
     println!("cargo::rerun-if-changed={ICON}");
 
     winresources::Resources::new()
-        .icon(fs::read(ICON)?)
+        .icon(std::fs::read(ICON)?)
         // Task Manager and the "Open with" list show the file description as the app's name.
         .string("FileDescription", "Peekr")
         .string("ProductName", "Peekr")

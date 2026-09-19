@@ -1,6 +1,7 @@
 //! Fullscreen overlay showing a frozen screenshot. The user drags a selection, and the recognized
 //! text appears next to it with a button to copy it.
 
+use std::f64::consts::TAU;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -9,8 +10,8 @@ use egui::emath::GuiRounding as _;
 use egui::epaint::RectShape;
 use egui::{
     Align, Align2, Area, Button, Color32, CornerRadius, CursorIcon, Event, Frame, Id, Key, Label, Layout, Margin,
-    Order, Painter, Pos2, Rect, RichText, ScrollArea, Shadow, Shape, Spinner, Stroke, StrokeKind, TextureOptions, Vec2,
-    ViewportCommand, pos2, vec2,
+    Order, Painter, Pos2, Rect, RichText, ScrollArea, Sense, Shadow, Shape, Stroke, StrokeKind, TextureOptions,
+    UiBuilder, Vec2, ViewportCommand, pos2, vec2,
 };
 use image::RgbaImage;
 use winit::monitor::MonitorHandle;
@@ -46,6 +47,12 @@ const CARD_GAP: f32 = 10.0;
 /// Space the card needs below or above the selection; otherwise it goes inside the selection.
 const CARD_ROOM: f32 = 240.0;
 const TEXT_MAX_HEIGHT: f32 = 320.0;
+/// The loader appears only when recognition takes longer than this.
+const LOADER_DELAY: Duration = Duration::from_millis(300);
+/// Smallest and largest size of the loader, which is scaled to the selection in between.
+const LOADER_SIZE: (f32, f32) = (10.0, 36.0);
+/// Width of the dark outline around the loader's arc.
+const LOADER_OUTLINE: f32 = 2.0;
 /// How often a pending recognition is checked for a result.
 const POLL_INTERVAL: Duration = Duration::from_millis(30);
 
@@ -108,6 +115,7 @@ pub fn capture_text(screens: &[Screenshot], recognize: Recognize<'_>, copy: Copy
                 screens: views,
                 stage: Stage::Selecting { drag: None },
                 card: None,
+                selections: 0,
                 copy_error: None,
                 repaint: vec![false; contexts.len()],
                 recognize,
@@ -204,6 +212,7 @@ enum Stage {
         screen: usize,
         selection: Rect,
         result: Receiver<Result<String>>,
+        started: Instant,
     },
     Done {
         screen: usize,
@@ -244,6 +253,9 @@ struct Overlay<'a> {
     stage: Stage,
     /// Window and area of the result card last frame, so clicks on it don't start a new selection.
     card: Option<(usize, Rect)>,
+    /// Counts selections, so each one gets a new card placed next to it, even when the previous
+    /// card was dragged away.
+    selections: u64,
     copy_error: Option<String>,
     /// Windows to draw again because the shared stage changed while another window was drawn.
     repaint: Vec<bool>,
@@ -286,6 +298,7 @@ impl window::App for Overlay<'_> {
                 drag: cursor.map(|start| (index, start)),
             });
             self.card = None;
+            self.selections += 1;
             self.copy_error = None;
         }
 
@@ -310,7 +323,18 @@ impl window::App for Overlay<'_> {
             self.finish_selection(index, screen, selection);
         }
 
-        if matches!(self.stage, Stage::Recognizing { .. }) && self.stage.screen() == Some(index) {
+        if let Stage::Recognizing {
+            screen: on,
+            selection,
+            started,
+            ..
+        } = self.stage
+            && on == index
+        {
+            // Most recognitions finish sooner, and the loader would only flash.
+            if started.elapsed() >= LOADER_DELAY {
+                paint_loader(ui, selection);
+            }
             ctx.request_repaint_after(POLL_INTERVAL);
         }
 
@@ -348,6 +372,7 @@ impl Overlay<'_> {
             screen: index,
             selection,
             result: (self.recognize)(region),
+            started: Instant::now(),
         });
     }
 
@@ -356,6 +381,7 @@ impl Overlay<'_> {
             screen,
             selection,
             result,
+            ..
         } = &self.stage
         else {
             return;
@@ -389,18 +415,24 @@ impl Overlay<'_> {
         }
     }
 
-    /// Draws the card with the recognition progress or result when the selection is on this
-    /// window. Returns whether Copy and Exit was clicked.
+    /// Draws the card with the recognition result when the selection is on this window. Returns
+    /// whether Copy and Close was clicked.
     fn show_card(&mut self, index: usize, ctx: &egui::Context, screen: Rect) -> bool {
-        if self.stage.screen() != Some(index) {
+        let Stage::Done {
+            screen: on,
+            selection,
+            result,
+        } = &self.stage
+        else {
+            return false;
+        };
+        if *on != index {
             return false;
         }
 
-        let (selection, result) = match &self.stage {
-            Stage::Selecting { .. } => return false,
-            Stage::Recognizing { selection, .. } => (*selection, None),
-            Stage::Done { selection, result, .. } => (*selection, Some(result)),
-        };
+        let selection = *selection;
+        // Only the recognized text can be moved out of the way; the rest are short notes.
+        let movable = matches!(result, Ok(text) if !text.is_empty());
 
         let width = selection
             .width()
@@ -409,30 +441,30 @@ impl Overlay<'_> {
         let (position, pivot) = card_position(screen, selection);
         let mut copy_clicked = false;
 
-        let response = Area::new(Id::new("ocr-result"))
+        // Egui keeps where the card was dragged to.
+        let response = Area::new(Id::new(("ocr-result", self.selections)))
             .order(Order::Foreground)
-            .fixed_pos(position)
+            .default_pos(position)
+            .movable(movable)
             .pivot(pivot)
             .constrain_to(screen.shrink(CARD_GAP))
             .show(ctx, |ui| {
+                // The card is dragged by its background, which the labels on it are part of. The
+                // recognized text opts back in to selection.
+                ui.style_mut().interaction.selectable_labels = false;
+
                 card_frame().show(ui, |ui| {
                     // Short statuses shrink the card to fit, while the text gets the full width.
                     ui.set_max_width(width);
 
                     match result {
-                        None => {
-                            ui.horizontal(|ui| {
-                                ui.add(Spinner::new().size(16.0).color(ACCENT));
-                                ui.label(RichText::new("Recognizing…").color(CARD_MUTED));
-                            });
-                        }
-                        Some(Err(message)) => {
+                        Err(message) => {
                             ui.label(RichText::new(message).color(ui.visuals().error_fg_color));
                         }
-                        Some(Ok(text)) if text.is_empty() => {
+                        Ok(text) if text.is_empty() => {
                             ui.label(RichText::new("No text found").color(CARD_MUTED));
                         }
-                        Some(Ok(text)) => {
+                        Ok(text) => {
                             ui.set_width(width);
                             copy_clicked = show_text(ui, text);
                         }
@@ -497,21 +529,25 @@ impl Overlay<'_> {
     }
 }
 
-/// Shows the recognized text in its own area with the Copy and Exit button below it. Returns
+/// Shows the recognized text in its own area with the Copy and Close button below it. Returns
 /// whether the button was clicked.
 fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
-    Frame::new()
-        .fill(TEXT_BACKGROUND)
-        .corner_radius(CornerRadius::same(CARD_RADIUS))
-        .inner_margin(Margin::same(14))
-        .show(ui, |ui| {
-            ScrollArea::vertical()
-                .max_height(TEXT_MAX_HEIGHT)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.add(Label::new(RichText::new(text).size(15.0).color(CARD_TEXT)).wrap());
-                });
-        });
+    // Drags anywhere on the text area select text rather than move the card.
+    ui.scope_builder(UiBuilder::new().sense(Sense::drag()), |ui| {
+        Frame::new()
+            .fill(TEXT_BACKGROUND)
+            .corner_radius(CornerRadius::same(CARD_RADIUS))
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| {
+                ScrollArea::vertical()
+                    .max_height(TEXT_MAX_HEIGHT)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        let text = RichText::new(text).size(15.0).color(CARD_TEXT);
+                        ui.add(Label::new(text).wrap().selectable(true));
+                    });
+            });
+    });
 
     ui.add_space(12.0);
 
@@ -526,10 +562,12 @@ fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().button_padding = BUTTON_PADDING;
 
-            let copy = Button::new(RichText::new("Copy and Exit").color(Color32::WHITE).strong())
+            let copy = Button::new(RichText::new("Copy and Close").color(Color32::WHITE).strong())
                 .fill(ACCENT)
                 .corner_radius(6.0)
-                .min_size(vec2(0.0, BUTTON_HEIGHT));
+                .min_size(vec2(0.0, BUTTON_HEIGHT))
+                // Takes drags too, so they don't move the card.
+                .sense(Sense::click_and_drag());
 
             ui.add(copy).on_hover_text("Enter or Ctrl+C").clicked()
         })
@@ -593,6 +631,45 @@ fn card_frame() -> Frame {
         })
 }
 
+/// Draws a spinning arc at the center of the selection being recognized, shrunk to fit small
+/// selections. A dark outline keeps it visible on any screenshot.
+fn paint_loader(ui: &egui::Ui, selection: Rect) {
+    let center = selection.center();
+    let size = (selection.size().min_elem() * 0.6).clamp(LOADER_SIZE.0, LOADER_SIZE.1);
+    let radius = size / 2.0;
+    let width = (size / 12.0).clamp(1.5, 3.0);
+
+    // The same motion as egui's spinner.
+    let time = ui.input(|i| i.time);
+    let start = time * TAU;
+    let end = start + 240_f64.to_radians() * time.sin();
+
+    // The outline reaches a little past the ends of the arc, so they are outlined too.
+    let overhang = f64::from(LOADER_OUTLINE / radius) * (end - start).signum();
+    let outline = arc(center, radius, start - overhang, end + overhang);
+    let painter = ui.painter();
+
+    painter.add(Shape::line(
+        outline,
+        Stroke::new(width + 2.0 * LOADER_OUTLINE, CARD_BACKGROUND),
+    ));
+    painter.add(Shape::line(arc(center, radius, start, end), Stroke::new(width, ACCENT)));
+}
+
+/// Points along a circular arc between two angles in radians.
+fn arc(center: Pos2, radius: f32, start: f64, end: f64) -> Vec<Pos2> {
+    let steps = (radius.round() as u32).clamp(8, 128);
+
+    (0..=steps)
+        .map(|step| {
+            let angle = start + (end - start) * f64::from(step) / f64::from(steps);
+            let (sin, cos) = angle.sin_cos();
+
+            center + radius * vec2(cos as f32, sin as f32)
+        })
+        .collect()
+}
+
 /// Shows the usage hint on a card at the top center of the screen.
 fn show_hint(ctx: &egui::Context, screen: Rect) {
     Area::new(Id::new("hint"))
@@ -605,4 +682,125 @@ fn show_hint(ctx: &egui::Context, screen: Rect) {
                 ui.label(RichText::new("Drag to select text").size(16.0).color(CARD_TEXT));
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use egui::{Modifiers, PointerButton, RawInput};
+
+    use super::*;
+    use crate::window::App as _;
+
+    const SCREEN: Vec2 = Vec2::new(1200.0, 800.0);
+
+    fn frame(ctx: &egui::Context, overlay: &mut Overlay<'_>, events: Vec<Event>) {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+            events,
+            ..RawInput::default()
+        };
+
+        ctx.run_ui(input, |ui| overlay.ui(0, ui)).textures_delta.clear();
+    }
+
+    fn button(pos: Pos2, pressed: bool) -> Event {
+        Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// Drags the result card by the point `grab` picks on it and returns how far the card moved.
+    fn drag_card(text: &str, grab: impl Fn(Rect) -> Pos2) -> Vec2 {
+        let ctx = egui::Context::default();
+        let image = RgbaImage::new(SCREEN.x as u32, SCREEN.y as u32);
+        let pixels = egui::ColorImage::filled([image.width() as usize, image.height() as usize], Color32::BLACK);
+        let recognize = |_| mpsc::channel().1;
+        let mut copy = |_: &str| Ok(());
+
+        let mut overlay = Overlay {
+            screens: vec![ScreenView {
+                texture: ctx.load_texture("screenshot", pixels, TextureOptions::NEAREST),
+                image: &image,
+            }],
+            stage: Stage::Done {
+                screen: 0,
+                selection: Rect::from_min_size(pos2(100.0, 100.0), vec2(400.0, 60.0)),
+                result: Ok(text.to_owned()),
+            },
+            card: None,
+            selections: 0,
+            copy_error: None,
+            repaint: vec![false],
+            recognize: &recognize,
+            copy: &mut copy,
+        };
+
+        for _ in 0..3 {
+            frame(&ctx, &mut overlay, Vec::new());
+        }
+
+        let before = overlay.card.expect("the card is shown").1;
+
+        let start = grab(before);
+        let end = start + vec2(80.0, 50.0);
+
+        frame(
+            &ctx,
+            &mut overlay,
+            vec![Event::PointerMoved(start), button(start, true)],
+        );
+
+        for step in 1..=5 {
+            let pos = start + (end - start) * (step as f32 / 5.0);
+            frame(&ctx, &mut overlay, vec![Event::PointerMoved(pos)]);
+        }
+
+        frame(&ctx, &mut overlay, vec![button(end, false)]);
+        frame(&ctx, &mut overlay, Vec::new());
+
+        overlay.card.expect("the card is shown").1.min - before.min
+    }
+
+    const MOVED: Vec2 = Vec2::new(80.0, 50.0);
+    const TEXT: &str = "Some recognized text
+on two lines";
+
+    #[test]
+    fn the_card_is_dragged_by_its_background() {
+        assert_eq!(drag_card(TEXT, |card| card.min + vec2(4.0, 4.0)), MOVED);
+    }
+
+    #[test]
+    fn the_card_is_dragged_by_the_key_hints() {
+        // The hints are at the bottom left, next to the button.
+        assert_eq!(drag_card(TEXT, |card| card.left_bottom() + vec2(30.0, -30.0)), MOVED);
+    }
+
+    #[test]
+    fn dragging_the_text_does_not_move_the_card() {
+        assert_eq!(drag_card(TEXT, |card| card.min + vec2(40.0, 34.0)), Vec2::ZERO);
+    }
+
+    #[test]
+    fn dragging_the_text_area_padding_does_not_move_the_card() {
+        assert_eq!(drag_card(TEXT, |card| card.min + vec2(18.0, 18.0)), Vec2::ZERO);
+    }
+
+    #[test]
+    fn dragging_the_button_does_not_move_the_card() {
+        assert_eq!(
+            drag_card(TEXT, |card| card.right_bottom() - vec2(30.0, 30.0)),
+            Vec2::ZERO
+        );
+    }
+
+    #[test]
+    fn the_no_text_card_is_not_dragged() {
+        assert_eq!(drag_card("", |card| card.min + vec2(4.0, 4.0)), Vec2::ZERO);
+    }
 }

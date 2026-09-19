@@ -99,21 +99,14 @@ impl Resources {
     }
 
     /// Writes the resources to `OUT_DIR` and has Cargo link them into the package's binaries.
-    /// Does nothing unless the target is Windows with the MSVC linker.
+    /// Meant to be called on Windows only; does nothing unless the MSVC linker is used.
     ///
     /// # Errors
     ///
     /// Fails when the icon is not a valid `.ico` file or the resource file cannot be written.
     #[expect(clippy::print_stdout, reason = "Cargo reads build script instructions from stdout")]
     pub fn link(&self) -> Result<()> {
-        let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-        let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-
-        if target_os != "windows" {
-            return Ok(());
-        }
-
-        if target_env != "msvc" {
+        if cfg!(not(target_env = "msvc")) {
             println!("cargo::warning=winresources: resources are only embedded with the MSVC linker");
             return Ok(());
         }
