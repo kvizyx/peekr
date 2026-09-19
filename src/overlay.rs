@@ -6,10 +6,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use egui::emath::GuiRounding as _;
+use egui::epaint::RectShape;
 use egui::{
-    Align, Align2, Area, Button, Color32, CornerRadius, CursorIcon, Event, FontId, Frame, Id, Key, Label, Layout,
-    Margin, Order, Painter, Pos2, Rect, RichText, ScrollArea, Shadow, Spinner, Stroke, StrokeKind, TextureOptions,
-    Vec2, ViewportCommand, pos2, vec2,
+    Align, Align2, Area, Button, Color32, CornerRadius, CursorIcon, Event, Frame, Id, Key, Label, Layout, Margin,
+    Order, Painter, Pos2, Rect, RichText, ScrollArea, Shadow, Shape, Spinner, Stroke, StrokeKind, TextureOptions, Vec2,
+    ViewportCommand, pos2, vec2,
 };
 use image::RgbaImage;
 use winit::monitor::MonitorHandle;
@@ -19,10 +20,10 @@ use crate::capture::Screenshot;
 use crate::window;
 
 const DIM: Color32 = Color32::from_black_alpha(150);
-const ACCENT: Color32 = Color32::from_rgb(249, 115, 22);
-const HINT: &str = "Drag to select text  ·  Esc to cancel";
-const HINT_BACKGROUND: Color32 = Color32::from_black_alpha(190);
-const HINT_PADDING: Vec2 = Vec2::new(14.0, 8.0);
+const ACCENT: Color32 = Color32::from_rgb(214, 104, 38);
+/// Distance between the top of the screen and the usage hint.
+const HINT_TOP: f32 = 16.0;
+const HINT_PADDING: Margin = Margin::symmetric(18, 10);
 /// Selections smaller than this (in screenshot pixels) are treated as accidental clicks.
 const MIN_SELECTION_PX: u32 = 4;
 
@@ -30,6 +31,15 @@ const CARD_BACKGROUND: Color32 = Color32::from_rgb(30, 30, 33);
 const CARD_BORDER: Color32 = Color32::from_rgb(48, 48, 52);
 const CARD_TEXT: Color32 = Color32::from_rgb(236, 236, 240);
 const CARD_MUTED: Color32 = Color32::from_rgb(150, 150, 158);
+/// Background of the recognized text area, a shade darker than the card.
+const TEXT_BACKGROUND: Color32 = Color32::from_rgb(22, 22, 25);
+const CARD_RADIUS: u8 = 10;
+/// Background of the key caps in the shortcut hints.
+const KEY_BACKGROUND: Color32 = Color32::from_rgb(44, 44, 48);
+const BUTTON_PADDING: Vec2 = Vec2::new(14.0, 6.0);
+const BUTTON_HEIGHT: f32 = 32.0;
+/// Space between a key name and the edges of its key cap.
+const KEY_PADDING: Vec2 = Vec2::new(6.0, 3.0);
 const CARD_WIDTH: (f32, f32) = (300.0, 560.0);
 /// Distance between the selection and the card, and between the card and the screen edges.
 const CARD_GAP: f32 = 10.0;
@@ -291,12 +301,13 @@ impl window::App for Overlay<'_> {
         let painter = ui.painter();
         self.paint_screenshot(index, painter, screen, selection);
 
-        if selecting {
-            paint_hint(painter, screen);
+        // The hint stays out of the way while the user drags.
+        if !matches!(self.stage, Stage::Selecting { drag: Some(_) }) {
+            show_hint(&ctx, screen);
+        }
 
-            if released && self.stage.screen() == Some(index) {
-                self.finish_selection(index, screen, selection);
-            }
+        if selecting && released && self.stage.screen() == Some(index) {
+            self.finish_selection(index, screen, selection);
         }
 
         if matches!(self.stage, Stage::Recognizing { .. }) && self.stage.screen() == Some(index) {
@@ -379,7 +390,7 @@ impl Overlay<'_> {
     }
 
     /// Draws the card with the recognition progress or result when the selection is on this
-    /// window. Returns whether Copy was clicked.
+    /// window. Returns whether Copy and Exit was clicked.
     fn show_card(&mut self, index: usize, ctx: &egui::Context, screen: Rect) -> bool {
         if self.stage.screen() != Some(index) {
             return false;
@@ -405,7 +416,8 @@ impl Overlay<'_> {
             .constrain_to(screen.shrink(CARD_GAP))
             .show(ctx, |ui| {
                 card_frame().show(ui, |ui| {
-                    ui.set_width(width);
+                    // Short statuses shrink the card to fit, while the text gets the full width.
+                    ui.set_max_width(width);
 
                     match result {
                         None => {
@@ -420,7 +432,10 @@ impl Overlay<'_> {
                         Some(Ok(text)) if text.is_empty() => {
                             ui.label(RichText::new("No text found").color(CARD_MUTED));
                         }
-                        Some(Ok(text)) => copy_clicked = show_text(ui, text),
+                        Some(Ok(text)) => {
+                            ui.set_width(width);
+                            copy_clicked = show_text(ui, text);
+                        }
                     }
 
                     if let Some(error) = &self.copy_error {
@@ -482,31 +497,71 @@ impl Overlay<'_> {
     }
 }
 
-/// Shows the recognized text with the Copy button below it. Returns whether Copy was clicked.
+/// Shows the recognized text in its own area with the Copy and Exit button below it. Returns
+/// whether the button was clicked.
 fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
-    ScrollArea::vertical()
-        .max_height(TEXT_MAX_HEIGHT)
-        .auto_shrink([false, true])
+    Frame::new()
+        .fill(TEXT_BACKGROUND)
+        .corner_radius(CornerRadius::same(CARD_RADIUS))
+        .inner_margin(Margin::same(14))
         .show(ui, |ui| {
-            ui.add(Label::new(RichText::new(text).size(15.0).color(CARD_TEXT)).wrap());
+            ScrollArea::vertical()
+                .max_height(TEXT_MAX_HEIGHT)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(Label::new(RichText::new(text).size(15.0).color(CARD_TEXT)).wrap());
+                });
         });
 
     ui.add_space(12.0);
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Esc to close").size(12.0).color(CARD_MUTED));
+        // The row is as tall as the button from the start, so the hints are centered against it.
+        ui.set_min_height(BUTTON_HEIGHT);
+
+        key_hint(ui, "Enter", "copy");
+        ui.add_space(8.0);
+        key_hint(ui, "Esc", "close");
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let copy = Button::new(RichText::new("Copy").color(Color32::WHITE).strong())
+            ui.spacing_mut().button_padding = BUTTON_PADDING;
+
+            let copy = Button::new(RichText::new("Copy and Exit").color(Color32::WHITE).strong())
                 .fill(ACCENT)
                 .corner_radius(6.0)
-                .min_size(vec2(76.0, 28.0));
+                .min_size(vec2(0.0, BUTTON_HEIGHT));
 
             ui.add(copy).on_hover_text("Enter or Ctrl+C").clicked()
         })
         .inner
     })
     .inner
+}
+
+/// Draws a keyboard shortcut as a key cap followed by what it does.
+fn key_hint(ui: &mut egui::Ui, key: &str, action: &str) {
+    ui.spacing_mut().item_spacing.x = 6.0;
+
+    // The key cap is painted by hand, as a Frame in a row centered against the button would
+    // stretch to the height of the row.
+    let background = ui.painter().add(Shape::Noop);
+
+    ui.add_space(KEY_PADDING.x);
+    let key = ui.label(RichText::new(key).size(11.0).color(CARD_TEXT)).rect;
+    ui.add_space(KEY_PADDING.x);
+
+    ui.painter().set(
+        background,
+        RectShape::new(
+            key.expand2(KEY_PADDING),
+            CornerRadius::same(5),
+            KEY_BACKGROUND,
+            Stroke::new(1.0, CARD_BORDER),
+            StrokeKind::Inside,
+        ),
+    );
+
+    ui.label(RichText::new(action).size(12.0).color(CARD_MUTED));
 }
 
 /// Places the card below the selection, above it when there is no room below, and inside its
@@ -528,7 +583,7 @@ fn card_frame() -> Frame {
     Frame::new()
         .fill(CARD_BACKGROUND)
         .stroke(Stroke::new(1.0, CARD_BORDER))
-        .corner_radius(CornerRadius::same(10))
+        .corner_radius(CornerRadius::same(CARD_RADIUS))
         .inner_margin(Margin::same(14))
         .shadow(Shadow {
             offset: [0, 6],
@@ -538,13 +593,16 @@ fn card_frame() -> Frame {
         })
 }
 
-/// Draws the usage hint at the top center of the screen.
-fn paint_hint(painter: &Painter, screen: Rect) {
-    let galley = painter.layout_no_wrap(HINT.to_owned(), FontId::proportional(15.0), Color32::WHITE);
-
-    let center = Pos2::new(screen.center().x, screen.min.y + 24.0);
-    let background = Rect::from_center_size(center, galley.size()).expand2(HINT_PADDING);
-
-    painter.rect_filled(background, 8.0, HINT_BACKGROUND);
-    painter.galley(background.min + HINT_PADDING, galley, Color32::WHITE);
+/// Shows the usage hint on a card at the top center of the screen.
+fn show_hint(ctx: &egui::Context, screen: Rect) {
+    Area::new(Id::new("hint"))
+        .order(Order::Foreground)
+        .interactable(false)
+        .fixed_pos(pos2(screen.center().x, screen.min.y + HINT_TOP))
+        .pivot(Align2::CENTER_TOP)
+        .show(ctx, |ui| {
+            card_frame().inner_margin(HINT_PADDING).show(ui, |ui| {
+                ui.label(RichText::new("Drag to select text").size(16.0).color(CARD_TEXT));
+            });
+        });
 }
