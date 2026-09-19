@@ -50,6 +50,9 @@ winit = { version = "0.30", default-features = false, features = [
 ] }
 xcap = "0.9"
 
+[build-dependencies]
+winresources = { path = "crates/winresources" }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -73,7 +76,7 @@ strip = true
 workspace = true
 
 [workspace]
-members = ["xtask"]
+members = ["crates/*", "xtask"]
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
