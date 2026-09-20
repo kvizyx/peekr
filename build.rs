@@ -7,6 +7,7 @@ fn main() {
     embed_executable_resources().expect("windows resources are embedded");
 }
 
+#[cfg(windows)]
 fn embed_executable_resources() -> std::io::Result<()> {
     const ICON: &str = "assets/icon.ico";
 
