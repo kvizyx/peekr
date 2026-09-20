@@ -4,132 +4,23 @@
   <img src="assets/icon.svg" width="160" alt="Peekr icon: a hand-drawn magnifying glass">
 </p>
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
-  <a href="https://github.com/kvizyx/peekr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kvizyx/peekr/ci.yml?branch=main&label=CI&logo=github" alt="CI"></a>
-</p>
-
-Cross-platform OCR utility that can extract text from screen and images. Recognition runs fully offline on [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) models
+Peekr is an offline cross-platform OCR desktop application that can extract text from screen and images. Recognition runs on local [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) models
 (PP-OCRv6 and PP-OCRv5) via ONNX Runtime.
 
-## Installation
 
-Grab the build for your system from [Releases](https://github.com/kvizyx/peekr/releases). Every
-download already contains the models, so everything works offline.
+## Development guide
 
-| System | Download | Requirements |
-| --- | --- | --- |
-| Windows | `peekr-<version>-windows-x86_64-setup.exe` (installer)<br>`peekr-<version>-windows-x86_64.zip` (portable) | Windows 10 or 11, x64 |
-| Linux | `peekr-<version>-linux-x86_64.tar.gz`<br>`peekr-<version>-linux-aarch64.tar.gz` | x86_64 or ARM64 with glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39 or newer) |
+This section outlines the rules, guidelines, and technical details of the project.
+It is intended for those who wants to participate in the project's development.
 
-**Installer.** Run it and follow the wizard. It installs for the current user, so it needs no
-administrator rights, adds a Start menu shortcut, can start Peekr with Windows, and uninstalls from
-**Settings → Apps**. The installer is not code-signed yet, so Windows SmartScreen shows a warning:
-choose **More info → Run anyway**.
+### RTK
 
-**Archives.** Unpack anywhere and run `peekr`; keep the `models` directory next to the executable.
-
-On Windows, peekr is also on the Windows Package Manager:
-
-```powershell
-winget install peekr
-```
-
-## Usage
-
-Peekr lives in the system tray. Press **Win+Shift+O** (**Super+Shift+O** on Linux) or click the tray
-icon and drag over the text. The recognized text appears next to the selection: press **Copy**
-(or **Enter**, **Ctrl+C**) to put it on the clipboard, or drag again to select something else.
-**Esc** or a right click closes the overlay.
-
-To change the hotkey, open **Settings** from the tray menu. Settings are stored in
-`%APPDATA%\peekr\config.toml` on Windows and `~/.config/peekr/config.toml` on Linux.
-
-```bash
-peekr --capture             # capture once and exit after copying, e.g. from a desktop shortcut
-peekr --image picture.png   # recognize an image file and print the text
-peekr --list-models         # show the models and the languages they cover
-```
-
-Text detection uses one model for all languages; recognition models cover different scripts. By
-default peekr runs every installed recognizer and keeps the best reading of each line. You can pin
-the models instead, e.g. `peekr --det pp-ocrv5-mobile --rec pp-ocrv5-eslav`.
-
-### Linux notes
-
-- **Hotkey.** The global hotkey works on X11 only. On Wayland, bind `peekr --capture` to a custom
-  shortcut in your desktop settings.
-- **Tray icon.** Uses the StatusNotifierItem protocol (KDE, Cinnamon, XFCE, most tiling setups). On
-  GNOME it needs the AppIndicator extension; without it peekr still runs and captures on the hotkey.
-- **Screen capture on Wayland** goes through the GNOME Shell or xdg-desktop-portal screenshot APIs
-  and needs XWayland to list monitors. Wayland doesn't tell apps where the cursor is, so the
-  overlay opens on every monitor: select the text on whichever one it is.
-- **Clipboard.** Linux clipboards live in the process that copied the text, so `--capture` keeps
-  running in the background until something else is copied (a clipboard manager takes over
-  right away).
-- **Runtime libraries.** `libgbm` and, on X11, `libxkbcommon-x11` are needed; desktop installations
-  already have them.
-
-## Building from source
-
-Download the models (~42 MB, into `./models`):
-
-```bash
-cargo xtask models
-```
-
-On Linux, install the build dependencies first (Debian and Ubuntu):
-
-```bash
-sudo apt install pkg-config libclang-dev libpipewire-0.3-dev libxcb1-dev libxcb-randr0-dev libegl-dev libgbm-dev libwayland-dev
-```
-
-Build and run:
-
-```bash
-cargo run --release
-```
-
-Package a release archive into `target/dist` (needs
-[cargo-about](https://github.com/EmbarkStudios/cargo-about)):
-
-```bash
-cargo xtask dist
-```
-
-Build the Windows installer, which also needs [Inno Setup 6](https://jrsoftware.org/isdl.php):
-
-```bash
-cargo xtask installer
-```
-
-### Publishing to winget
-
-Updates are submitted automatically: when a release is published, the `winget` workflow opens a
-pull request against [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs). It needs a
-`WINGET_TOKEN` secret, a classic personal access token with the `public_repo` scope from an account
-that has forked that repository; without the secret the workflow only reports that it skipped.
-
-The first version has to be submitted by hand, since the package does not exist there yet. Write
-the manifests (they point at the installer of that release and hash it):
-
-```bash
-cargo xtask winget 0.1.1
-```
-
-Check them and open the pull request:
-
-```bash
-winget validate --manifest target/winget/manifests/k/kvizyx/Peekr/0.1.1
-```
-
-```bash
-wingetcreate submit --token <github token> target/winget/manifests/k/kvizyx/Peekr/0.1.1
-```
+Our [AGENTS.md](AGENTS.md) provides hints on using [RTK](https://www.rtk-ai.app/docs) when it's possible
+to optimize token usage, so if you use agents, I strongly recommend you to set up [RTK](https://www.rtk-ai.app/docs) in your local environment.
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
 
 The PaddleOCR models are provided by PaddlePaddle under the Apache License 2.0. Release archives
-include the licenses of the models, ONNX Runtime and all Rust dependencies.
+include the licenses of the models, ONNX Runtime and all dependencies.

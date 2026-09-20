@@ -113,5 +113,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --draft \
-            --title "peekr ${GITHUB_REF_NAME#v}" \
+            --title "v${GITHUB_REF_NAME#v}" \
             --generate-notes

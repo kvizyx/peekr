@@ -137,6 +137,7 @@ impl Resources {
             for (id, image) in (1..).zip(&images) {
                 entry(&mut out, RT_ICON, id, MEMORY_FLAGS, LANGUAGE, image.data);
             }
+
             entry(&mut out, RT_GROUP_ICON, 1, MEMORY_FLAGS, LANGUAGE, &icon_group(&images));
         }
 

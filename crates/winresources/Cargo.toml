@@ -3,7 +3,7 @@ name = "winresources"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Embeds an icon and version information into Windows executables without the Windows SDK"
+description = "Embeds app information into the Windows executable without the Windows SDK"
 license = "MIT"
 publish = false
 

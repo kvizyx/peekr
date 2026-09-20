@@ -6,12 +6,12 @@ on:
     branches: [main]
     paths-ignore:
       - README.md
-      - CLAUDE.md
+      - AGENTS.md
       - LICENSE
   pull_request:
     paths-ignore:
       - README.md
-      - CLAUDE.md
+      - AGENTS.md
       - LICENSE
 
 permissions:
@@ -25,8 +25,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Formatting does not depend on the platform, so it runs once, without system libraries or a
-  # build cache, and reports within seconds.
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -40,8 +38,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-  # Platform code and dependencies differ per OS and architecture, and clippy only checks what
-  # compiles for the runner's target, so it runs on every platform we ship.
   clippy:
     name: Clippy (${{ matrix.os }})
     strategy:
@@ -69,7 +65,6 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  # The tests cover platform-independent logic so one platform is enough.
   test:
     name: Test
     runs-on: ubuntu-24.04
