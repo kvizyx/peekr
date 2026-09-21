@@ -1,5 +1,8 @@
 //! The tray application and one-shot captures.
 
+use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::Result;
@@ -26,10 +29,15 @@ enum AppEvent {
 struct EventSender {
     sender: Sender<AppEvent>,
     waker: Waker,
+    /// Set when an event is sent and cleared once the main thread picks it up. A window that is
+    /// open at that moment watches this and closes, since only one window runs at a time.
+    waiting: Arc<AtomicBool>,
 }
 
 impl EventSender {
     fn send(&self, event: AppEvent) {
+        self.waiting.store(true, Ordering::Release);
+
         // The receiver is gone only when the app is shutting down.
         let _ = self.sender.send(event);
         self.waker.wake();
@@ -39,9 +47,11 @@ impl EventSender {
 pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
     let event_loop = EventLoop::new();
     let (sender, events) = channel();
+    let waiting = Arc::new(AtomicBool::new(false));
     let sender = EventSender {
         sender,
         waker: event_loop.waker(),
+        waiting: Arc::clone(&waiting),
     };
 
     let worker = OcrWorker::spawn(store, ocr_config);
@@ -62,7 +72,12 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
         None => log::info!("ready: click the tray icon or run `peekr --capture`"),
     }
 
+    // Whether the settings window was closed only to let an event through, and should come back.
+    let mut reopen_settings = false;
+
     while let Some(event) = event_loop.next(&events) {
+        waiting.store(false, Ordering::Release);
+
         match event {
             AppEvent::Capture => {
                 let copy = &mut |text: &str| {
@@ -79,15 +94,25 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
                 }
 
                 drop_stale_requests(&events, &sender);
+
+                if reopen_settings {
+                    reopen_settings = false;
+                    sender.send(AppEvent::OpenSettings);
+                }
             }
             AppEvent::OpenSettings => {
-                open_settings(&mut config, hotkey.as_mut());
+                let interrupted = || waiting.load(Ordering::Acquire);
+                open_settings(&mut config, hotkey.as_mut(), &interrupted);
 
                 if let Some(tray) = &tray {
                     tray.set_hotkey(hotkey.as_ref().and_then(GlobalHotkey::current));
                 }
 
-                drop_stale_requests(&events, &sender);
+                // The window closed on its own, so anything that piled up meanwhile is stale.
+                reopen_settings = interrupted();
+                if !reopen_settings {
+                    drop_stale_requests(&events, &sender);
+                }
             }
             AppEvent::Quit => break,
         }
@@ -163,33 +188,39 @@ fn create_tray(sender: &EventSender, hotkey: Option<Shortcut>) -> Result<Tray> {
     })
 }
 
-/// Shows the settings window. Every recorded hotkey is checked and saved right away, and
-/// becomes active once the window closes.
-fn open_settings(config: &mut Config, mut hotkey: Option<&mut GlobalHotkey>) {
-    // An active hotkey would start a capture instead of being recorded.
-    if let Some(hotkey) = hotkey.as_mut() {
-        hotkey.unregister();
-    }
-
+/// Shows the settings window, which stays open until the user closes it or `interrupted`
+/// reports that another request is waiting. The hotkey keeps working meanwhile: it is released
+/// only while a new one is being recorded, where it would fire instead of being recorded.
+fn open_settings(config: &mut Config, hotkey: Option<&mut GlobalHotkey>, interrupted: &dyn Fn() -> bool) {
     let current = config.hotkey;
-    let result = settings::edit_hotkey(current, &mut |candidate| {
-        // Registering proves that no other application holds the shortcut.
-        if let Some(hotkey) = hotkey.as_mut() {
+    let config = RefCell::new(config);
+    let hotkey = RefCell::new(hotkey);
+
+    let mut apply = |candidate: Shortcut| {
+        // Registering proves that no other application holds the shortcut, and leaves it active.
+        if let Some(hotkey) = hotkey.borrow_mut().as_mut() {
             hotkey.register(candidate)?;
-            hotkey.unregister();
         }
 
+        let mut config = config.borrow_mut();
         config.hotkey = candidate;
         config.save()
-    });
+    };
 
-    if let Err(e) = result {
+    let mut recording = |recording: bool| {
+        let mut borrowed = hotkey.borrow_mut();
+        let Some(hotkey) = borrowed.as_mut() else {
+            return;
+        };
+
+        if recording {
+            hotkey.unregister();
+        } else if let Err(e) = hotkey.register(config.borrow().hotkey) {
+            log::warn!("{e:#}");
+        }
+    };
+
+    if let Err(e) = settings::edit_hotkey(current, &mut apply, &mut recording, interrupted) {
         log::error!("{e:#}");
-    }
-
-    if let Some(hotkey) = hotkey
-        && let Err(e) = hotkey.register(config.hotkey)
-    {
-        log::warn!("{e:#}");
     }
 }

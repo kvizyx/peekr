@@ -12,6 +12,7 @@ mod overlay;
 mod platform;
 mod settings;
 mod shortcut;
+mod theme;
 mod tray;
 mod window;
 mod worker;

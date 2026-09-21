@@ -10,33 +10,24 @@ use egui::emath::GuiRounding as _;
 use egui::epaint::RectShape;
 use egui::{
     Align, Align2, Area, Button, Color32, CornerRadius, CursorIcon, Event, Frame, Id, Key, Label, Layout, Margin,
-    Order, Painter, Pos2, Rect, RichText, ScrollArea, Sense, Shadow, Shape, Stroke, StrokeKind, TextureOptions,
-    UiBuilder, Vec2, ViewportCommand, pos2, vec2,
+    Order, Painter, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextureOptions, UiBuilder,
+    Vec2, ViewportCommand, pos2, vec2,
 };
 use image::RgbaImage;
 use winit::monitor::MonitorHandle;
 use winit::window::{Window, WindowAttributes, WindowLevel};
 
 use crate::capture::Screenshot;
+use crate::theme::{self, ACCENT};
 use crate::window;
 
 const DIM: Color32 = Color32::from_black_alpha(150);
-const ACCENT: Color32 = Color32::from_rgb(214, 104, 38);
 /// Distance between the top of the screen and the usage hint.
 const HINT_TOP: f32 = 16.0;
 const HINT_PADDING: Margin = Margin::symmetric(18, 10);
 /// Selections smaller than this (in screenshot pixels) are treated as accidental clicks.
 const MIN_SELECTION_PX: u32 = 4;
 
-const CARD_BACKGROUND: Color32 = Color32::from_rgb(30, 30, 33);
-const CARD_BORDER: Color32 = Color32::from_rgb(48, 48, 52);
-const CARD_TEXT: Color32 = Color32::from_rgb(236, 236, 240);
-const CARD_MUTED: Color32 = Color32::from_rgb(150, 150, 158);
-/// Background of the recognized text area, a shade darker than the card.
-const TEXT_BACKGROUND: Color32 = Color32::from_rgb(22, 22, 25);
-const CARD_RADIUS: u8 = 10;
-/// Background of the key caps in the shortcut hints.
-const KEY_BACKGROUND: Color32 = Color32::from_rgb(44, 44, 48);
 const BUTTON_PADDING: Vec2 = Vec2::new(14.0, 6.0);
 const BUTTON_HEIGHT: f32 = 32.0;
 /// Space between a key name and the edges of its key cap.
@@ -453,7 +444,7 @@ impl Overlay<'_> {
                 // recognized text opts back in to selection.
                 ui.style_mut().interaction.selectable_labels = false;
 
-                card_frame().show(ui, |ui| {
+                theme::card(Margin::same(14)).show(ui, |ui| {
                     // Short statuses shrink the card to fit, while the text gets the full width.
                     ui.set_max_width(width);
 
@@ -462,7 +453,7 @@ impl Overlay<'_> {
                             ui.label(RichText::new(message).color(ui.visuals().error_fg_color));
                         }
                         Ok(text) if text.is_empty() => {
-                            ui.label(RichText::new("No text found").color(CARD_MUTED));
+                            ui.label(RichText::new("No text found").color(theme::MUTED));
                         }
                         Ok(text) => {
                             ui.set_width(width);
@@ -535,15 +526,15 @@ fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
     // Drags anywhere on the text area select text rather than move the card.
     ui.scope_builder(UiBuilder::new().sense(Sense::drag()), |ui| {
         Frame::new()
-            .fill(TEXT_BACKGROUND)
-            .corner_radius(CornerRadius::same(CARD_RADIUS))
+            .fill(theme::SURFACE)
+            .corner_radius(CornerRadius::same(theme::RADIUS))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ScrollArea::vertical()
                     .max_height(TEXT_MAX_HEIGHT)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        let text = RichText::new(text).size(15.0).color(CARD_TEXT);
+                        let text = RichText::new(text).size(15.0).color(theme::TEXT);
                         ui.add(Label::new(text).wrap().selectable(true));
                     });
             });
@@ -585,7 +576,7 @@ fn key_hint(ui: &mut egui::Ui, key: &str, action: &str) {
     let background = ui.painter().add(Shape::Noop);
 
     ui.add_space(KEY_PADDING.x);
-    let key = ui.label(RichText::new(key).size(11.0).color(CARD_TEXT)).rect;
+    let key = ui.label(RichText::new(key).size(11.0).color(theme::TEXT)).rect;
     ui.add_space(KEY_PADDING.x);
 
     ui.painter().set(
@@ -593,13 +584,13 @@ fn key_hint(ui: &mut egui::Ui, key: &str, action: &str) {
         RectShape::new(
             key.expand2(KEY_PADDING),
             CornerRadius::same(5),
-            KEY_BACKGROUND,
-            Stroke::new(1.0, CARD_BORDER),
+            theme::RAISED,
+            Stroke::new(1.0, theme::BORDER),
             StrokeKind::Inside,
         ),
     );
 
-    ui.label(RichText::new(action).size(12.0).color(CARD_MUTED));
+    ui.label(RichText::new(action).size(12.0).color(theme::MUTED));
 }
 
 /// Places the card below the selection, above it when there is no room below, and inside its
@@ -615,20 +606,6 @@ fn card_position(screen: Rect, selection: Rect) -> (Pos2, Align2) {
             Align2::LEFT_BOTTOM,
         )
     }
-}
-
-fn card_frame() -> Frame {
-    Frame::new()
-        .fill(CARD_BACKGROUND)
-        .stroke(Stroke::new(1.0, CARD_BORDER))
-        .corner_radius(CornerRadius::same(CARD_RADIUS))
-        .inner_margin(Margin::same(14))
-        .shadow(Shadow {
-            offset: [0, 6],
-            blur: 24,
-            spread: 0,
-            color: Color32::from_black_alpha(110),
-        })
 }
 
 /// Draws a spinning arc at the center of the selection being recognized, shrunk to fit small
@@ -651,7 +628,7 @@ fn paint_loader(ui: &egui::Ui, selection: Rect) {
 
     painter.add(Shape::line(
         outline,
-        Stroke::new(width + 2.0 * LOADER_OUTLINE, CARD_BACKGROUND),
+        Stroke::new(width + 2.0 * LOADER_OUTLINE, theme::BACKGROUND),
     ));
     painter.add(Shape::line(arc(center, radius, start, end), Stroke::new(width, ACCENT)));
 }
@@ -678,8 +655,8 @@ fn show_hint(ctx: &egui::Context, screen: Rect) {
         .fixed_pos(pos2(screen.center().x, screen.min.y + HINT_TOP))
         .pivot(Align2::CENTER_TOP)
         .show(ctx, |ui| {
-            card_frame().inner_margin(HINT_PADDING).show(ui, |ui| {
-                ui.label(RichText::new("Drag to select text").size(16.0).color(CARD_TEXT));
+            theme::card(HINT_PADDING).show(ui, |ui| {
+                ui.label(RichText::new("Drag to select text").size(16.0).color(theme::TEXT));
             });
         });
 }
