@@ -6,14 +6,22 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::ops::Range;
 
 use egui::epaint::textures::{TextureFilter, TexturesDelta};
 use egui::epaint::{ClippedPrimitive, ImageData, ImageDelta, Mesh, Primitive, Vertex};
 use egui::{Color32, Rect, TextureId};
 
-/// Frames smaller than this are drawn on the calling thread; spawning threads would cost more.
+/// Areas smaller than this are drawn on the calling thread; spawning threads would cost more.
 const PARALLEL_MIN_PIXELS: usize = 256 * 256;
 const MAX_THREADS: usize = 8;
+
+/// The part of a frame that was drawn again, as ranges of rows and of columns within them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Damage {
+    pub rows: Range<usize>,
+    pub columns: Range<usize>,
+}
 
 /// Pixels in the format softbuffer presents: `0x00RRGGBB`, row by row.
 pub struct Frame<'a> {
@@ -33,6 +41,10 @@ struct Band<'a> {
 #[derive(Default)]
 pub struct Renderer {
     textures: HashMap<TextureId, Texture>,
+    /// Last frame's primitives, to work out which pixels changed.
+    previous: Vec<ClippedPrimitive>,
+    /// Size of the frame the previous primitives were drawn into.
+    size: (usize, usize),
 }
 
 struct Texture {
@@ -40,6 +52,8 @@ struct Texture {
     height: usize,
     pixels: Vec<Color32>,
     filter: TextureFilter,
+    /// Whether every texel is opaque, so drawing the texture hides what is under it.
+    opaque: bool,
 }
 
 /// Pixel area triangles are cut to; `max` is exclusive.
@@ -61,67 +75,162 @@ struct Point {
 }
 
 impl Renderer {
-    /// Clears the frame and draws the primitives, applying (and consuming) texture changes.
+    /// Draws the primitives, applying (and consuming) texture changes, and returns the part of
+    /// the frame that changed. Only those pixels are drawn again, so the frame has to keep its
+    /// contents in between.
     pub fn render(
         &mut self,
         frame: &mut Frame<'_>,
         primitives: &[ClippedPrimitive],
         textures: &mut TexturesDelta,
         pixels_per_point: f32,
-    ) {
+    ) -> Option<Damage> {
+        let textures_changed = !textures.set.is_empty() || !textures.free.is_empty();
+
         for (id, deltas) in textures.set.drain() {
             for delta in deltas {
                 self.set_texture(id, &delta);
             }
         }
 
+        let mut drawn = None;
+
         if frame.width > 0 {
-            self.draw(frame, primitives, pixels_per_point);
+            // A texture can be drawn anywhere, so its change is not worth tracking in detail.
+            let damage = if textures_changed || self.size != (frame.width, frame.height) {
+                Clip::frame(frame)
+            } else {
+                self.damage(primitives, frame, pixels_per_point)
+            };
+
+            if !damage.is_empty() {
+                self.draw(frame, primitives, pixels_per_point, damage);
+                drawn = Some(Damage {
+                    rows: damage.min_y as usize..damage.max_y as usize,
+                    columns: damage.min_x as usize..damage.max_x as usize,
+                });
+            }
+
+            self.previous.clear();
+            self.previous.extend_from_slice(primitives);
+            self.size = (frame.width, frame.height);
         }
 
         for id in textures.free.drain() {
             self.textures.remove(&id);
         }
+
+        drawn
     }
 
-    /// Splits large frames into horizontal bands drawn on separate threads.
-    fn draw(&self, frame: &mut Frame<'_>, primitives: &[ClippedPrimitive], pixels_per_point: f32) {
-        let threads = if frame.pixels.len() < PARALLEL_MIN_PIXELS {
+    /// The pixels where this frame differs from the last one.
+    fn damage(&self, primitives: &[ClippedPrimitive], frame: &Frame<'_>, pixels_per_point: f32) -> Clip {
+        if self.previous.len() != primitives.len() {
+            return Clip::frame(frame);
+        }
+
+        let mut damage = Clip::EMPTY;
+        for (previous, current) in self.previous.iter().zip(primitives) {
+            damage = damage.union(changed(previous, current, frame, pixels_per_point));
+        }
+
+        damage
+    }
+
+    /// Whether the primitive paints over the whole damaged area without blending, hiding both
+    /// the cleared background and everything drawn before it.
+    #[expect(clippy::float_cmp, reason = "the bounds are the vertex positions themselves")]
+    fn covers(&self, primitive: &ClippedPrimitive, damage: Clip, pixels_per_point: f32) -> bool {
+        let Primitive::Mesh(mesh) = &primitive.primitive else {
+            return false;
+        };
+
+        // Two triangles of a rectangle, with no transparency anywhere.
+        if mesh.indices.len() != 6 || mesh.vertices.len() != 4 {
+            return false;
+        }
+        if mesh.vertices.iter().any(|vertex| vertex.color.a() != 255) {
+            return false;
+        }
+        if !self
+            .textures
+            .get(&mesh.texture_id)
+            .is_some_and(|texture| texture.opaque)
+        {
+            return false;
+        }
+
+        let bounds = mesh.calc_bounds();
+        let is_corner = |vertex: &Vertex| {
+            (vertex.pos.x == bounds.min.x || vertex.pos.x == bounds.max.x)
+                && (vertex.pos.y == bounds.min.y || vertex.pos.y == bounds.max.y)
+        };
+
+        mesh.vertices.iter().all(is_corner)
+            && Clip::inside(bounds.intersect(primitive.clip_rect), pixels_per_point).contains(damage)
+    }
+
+    /// Splits the damaged rows into horizontal bands drawn on separate threads.
+    fn draw(&self, frame: &mut Frame<'_>, primitives: &[ClippedPrimitive], pixels_per_point: f32, damage: Clip) {
+        let covered = primitives
+            .iter()
+            .rposition(|primitive| self.covers(primitive, damage, pixels_per_point));
+        let primitives = &primitives[covered.unwrap_or(0)..];
+        let clear = covered.is_none();
+
+        let (width, top) = (frame.width, damage.min_y as usize);
+        let rows = damage.max_y as usize - top;
+        let damaged_pixels = rows * (damage.max_x - damage.min_x) as usize;
+        let threads = if damaged_pixels < PARALLEL_MIN_PIXELS {
             1
         } else {
             std::thread::available_parallelism()
                 .map_or(1, NonZeroUsize::get)
                 .min(MAX_THREADS)
         };
-        let band_rows = frame.height.div_ceil(threads).max(1);
+        let band_rows = rows.div_ceil(threads).max(1);
+        let damaged = &mut frame.pixels[top * width..damage.max_y as usize * width];
 
         std::thread::scope(|scope| {
-            for (index, pixels) in frame.pixels.chunks_mut(band_rows * frame.width).enumerate() {
+            for (index, pixels) in damaged.chunks_mut(band_rows * width).enumerate() {
                 let mut band = Band {
                     pixels,
-                    width: frame.width,
-                    top: index * band_rows,
+                    width,
+                    top: top + index * band_rows,
                 };
 
                 if threads == 1 {
-                    self.draw_band(&mut band, primitives, pixels_per_point);
+                    self.draw_band(&mut band, primitives, pixels_per_point, damage, clear);
                 } else {
-                    scope.spawn(move || self.draw_band(&mut band, primitives, pixels_per_point));
+                    scope.spawn(move || self.draw_band(&mut band, primitives, pixels_per_point, damage, clear));
                 }
             }
         });
     }
 
-    fn draw_band(&self, band: &mut Band<'_>, primitives: &[ClippedPrimitive], pixels_per_point: f32) {
-        band.pixels.fill(0);
+    fn draw_band(
+        &self,
+        band: &mut Band<'_>,
+        primitives: &[ClippedPrimitive],
+        pixels_per_point: f32,
+        damage: Clip,
+        clear: bool,
+    ) {
+        if clear {
+            let columns = damage.min_x as usize..damage.max_x as usize;
+
+            for row in band.pixels.chunks_mut(band.width) {
+                row[columns.clone()].fill(0);
+            }
+        }
 
         for primitive in primitives {
             let Primitive::Mesh(mesh) = &primitive.primitive else {
                 continue;
             };
 
-            let clip = Clip::new(primitive.clip_rect, pixels_per_point, band);
-            if clip.min_x < clip.max_x && clip.min_y < clip.max_y {
+            let clip = Clip::new(primitive.clip_rect, pixels_per_point, band).intersect(damage);
+            if !clip.is_empty() {
                 self.draw_mesh(band, mesh, clip, pixels_per_point);
             }
         }
@@ -131,12 +240,15 @@ impl Renderer {
         let ImageData::Color(image) = &delta.image;
         let [width, height] = image.size;
 
+        let opaque = image.pixels.iter().all(|pixel| pixel.a() == 255);
+
         let Some([x, y]) = delta.pos else {
             let texture = Texture {
                 width,
                 height,
                 pixels: image.pixels.clone(),
                 filter: delta.options.magnification,
+                opaque,
             };
             self.textures.insert(id, texture);
             return;
@@ -145,6 +257,7 @@ impl Renderer {
         let Some(texture) = self.textures.get_mut(&id) else {
             return;
         };
+        texture.opaque &= opaque;
 
         for (row, source) in image.pixels.chunks_exact(width).enumerate() {
             let start = (y + row) * texture.width + x;
@@ -170,6 +283,81 @@ impl Renderer {
 }
 
 impl Clip {
+    const EMPTY: Self = Self {
+        min_x: 0,
+        min_y: 0,
+        max_x: 0,
+        max_y: 0,
+    };
+
+    fn frame(frame: &Frame<'_>) -> Self {
+        Self {
+            min_x: 0,
+            min_y: 0,
+            max_x: frame.width as i32,
+            max_y: frame.height as i32,
+        }
+    }
+
+    /// The pixels a rectangle covers completely, with its edges rounded inwards.
+    fn inside(rect: Rect, pixels_per_point: f32) -> Self {
+        Self {
+            min_x: (rect.min.x * pixels_per_point).ceil() as i32,
+            min_y: (rect.min.y * pixels_per_point).ceil() as i32,
+            max_x: (rect.max.x * pixels_per_point).floor() as i32,
+            max_y: (rect.max.y * pixels_per_point).floor() as i32,
+        }
+    }
+
+    /// The pixels a rectangle can touch, with one to spare for rounding and anti-aliasing.
+    fn around(rect: Rect, pixels_per_point: f32, frame: &Frame<'_>) -> Self {
+        let clamp = |value: f32, max: usize| (value as i32).clamp(0, max as i32);
+
+        Self {
+            min_x: clamp((rect.min.x * pixels_per_point).floor() - 1.0, frame.width),
+            min_y: clamp((rect.min.y * pixels_per_point).floor() - 1.0, frame.height),
+            max_x: clamp((rect.max.x * pixels_per_point).ceil() + 1.0, frame.width),
+            max_y: clamp((rect.max.y * pixels_per_point).ceil() + 1.0, frame.height),
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.min_x >= self.max_x || self.min_y >= self.max_y
+    }
+
+    fn union(self, other: Self) -> Self {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+
+        Self {
+            min_x: self.min_x.min(other.min_x),
+            min_y: self.min_y.min(other.min_y),
+            max_x: self.max_x.max(other.max_x),
+            max_y: self.max_y.max(other.max_y),
+        }
+    }
+
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            min_x: self.min_x.max(other.min_x),
+            min_y: self.min_y.max(other.min_y),
+            max_x: self.max_x.min(other.max_x),
+            max_y: self.max_y.min(other.max_y),
+        }
+    }
+
+    fn contains(self, other: Self) -> bool {
+        other.is_empty()
+            || (self.min_x <= other.min_x
+                && self.min_y <= other.min_y
+                && self.max_x >= other.max_x
+                && self.max_y >= other.max_y)
+    }
+
     fn new(rect: Rect, pixels_per_point: f32, band: &Band<'_>) -> Self {
         let (top, bottom) = (band.top as f32, (band.top + band.pixels.len() / band.width) as f32);
         let to_pixels = |value: f32, min: f32, max: f32| (value * pixels_per_point).round().clamp(min, max) as i32;
@@ -193,6 +381,64 @@ impl Point {
             values: [r, g, b, a, vertex.uv.x, vertex.uv.y],
         }
     }
+}
+
+/// The pixels where a primitive differs from the way it was drawn last frame.
+///
+/// egui merges everything it can into one mesh, so a mesh that spans the screen usually has only
+/// a few triangles that moved; the rest of it is left alone.
+fn changed(previous: &ClippedPrimitive, current: &ClippedPrimitive, frame: &Frame<'_>, pixels_per_point: f32) -> Clip {
+    let whole = || bounds(previous, frame, pixels_per_point).union(bounds(current, frame, pixels_per_point));
+
+    let (Primitive::Mesh(previous_mesh), Primitive::Mesh(current_mesh)) = (&previous.primitive, &current.primitive)
+    else {
+        return whole();
+    };
+    if previous.clip_rect != current.clip_rect
+        || previous_mesh.texture_id != current_mesh.texture_id
+        || previous_mesh.indices != current_mesh.indices
+        || previous_mesh.vertices.len() != current_mesh.vertices.len()
+    {
+        return whole();
+    }
+    if previous_mesh.vertices == current_mesh.vertices {
+        return Clip::EMPTY;
+    }
+
+    let clip = previous.clip_rect;
+    let mut damage = Clip::EMPTY;
+
+    for triangle in previous_mesh.indices.as_chunks::<3>().0 {
+        let vertices = |mesh: &Mesh| triangle.map(|index| mesh.vertices.get(index as usize).copied());
+        let (previous_vertices, current_vertices) = (vertices(previous_mesh), vertices(current_mesh));
+
+        if previous_vertices == current_vertices {
+            continue;
+        }
+
+        for corners in [previous_vertices, current_vertices] {
+            let rect = corners.iter().flatten().fold(Rect::NOTHING, |rect, vertex| {
+                rect.union(Rect::from_min_max(vertex.pos, vertex.pos))
+            });
+
+            damage = damage.union(Clip::around(rect.intersect(clip), pixels_per_point, frame));
+        }
+    }
+
+    damage
+}
+
+/// The pixels a primitive can touch.
+fn bounds(primitive: &ClippedPrimitive, frame: &Frame<'_>, pixels_per_point: f32) -> Clip {
+    let Primitive::Mesh(mesh) = &primitive.primitive else {
+        return Clip::frame(frame);
+    };
+
+    Clip::around(
+        mesh.calc_bounds().intersect(primitive.clip_rect),
+        pixels_per_point,
+        frame,
+    )
 }
 
 /// Fills the pixels whose centers lie inside the triangle: top and left edges inclusive, bottom
@@ -231,6 +477,11 @@ fn draw_triangle(band: &mut Band<'_>, texture: &Texture, clip: Clip, mut points:
         && dx[5] == 0.0
         && [top, middle, bottom].iter().all(|p| p.values[..4] == [255.0; 4]);
 
+    // Shadows, gradients and every anti-aliased edge take one color from the texture and vary
+    // only the tint, so the texture is sampled once for the whole triangle.
+    let texel = (dx[4] == 0.0 && dy[4] == 0.0 && dx[5] == 0.0 && dy[5] == 0.0)
+        .then(|| texture.sample(top.values[4], top.values[5]));
+
     let first_row = pixel_index(top.y).max(clip.min_y);
     let end_row = pixel_index(bottom.y).min(clip.max_y);
 
@@ -267,7 +518,11 @@ fn draw_triangle(band: &mut Band<'_>, texture: &Texture, clip: Clip, mut points:
         }
 
         for pixel in span {
-            blend(pixel, shade(texture, values));
+            let color = match texel {
+                Some(texel) => tint_texel(texel, &values),
+                None => shade(texture, values),
+            };
+            blend(pixel, color);
 
             for (value, step) in values.iter_mut().zip(dx) {
                 *value += step;
@@ -293,6 +548,7 @@ fn copy_image_span(span: &mut [u32], texture: &Texture, u: f32, step: f32, v: f3
         for (pixel, &texel) in copied.iter_mut().zip(&texels[start..]) {
             draw(pixel, texel);
         }
+
         for pixel in rest {
             draw(pixel, texels[texels.len() - 1]);
         }
@@ -326,9 +582,13 @@ fn edge_x(start: Point, end: Point, y: f32) -> f32 {
 }
 
 /// Vertex color multiplied by the texture color, premultiplied RGBA.
-fn shade(texture: &Texture, [red, green, blue, alpha, u, v]: [f32; 6]) -> [u32; 4] {
-    let texel = texture.sample(u, v);
-    let tint = [red, green, blue, alpha].map(|c| c.clamp(0.0, 255.0).round() as u32);
+fn shade(texture: &Texture, values: [f32; 6]) -> [u32; 4] {
+    tint_texel(texture.sample(values[4], values[5]), &values)
+}
+
+/// Multiplies a texel by the color interpolated across the triangle.
+fn tint_texel(texel: [u8; 4], values: &[f32; 6]) -> [u32; 4] {
+    let tint = [values[0], values[1], values[2], values[3]].map(|c| c.clamp(0.0, 255.0).round() as u32);
 
     std::array::from_fn(|i| (u32::from(texel[i]) * tint[i] + 127) / 255)
 }
@@ -412,7 +672,7 @@ fn pack([r, g, b, _]: [u32; 4]) -> u32 {
 mod tests {
     use egui::TextureOptions;
     use egui::epaint::{ColorImage, ImageDelta};
-    use egui::{Pos2, pos2};
+    use egui::{Pos2, pos2, vec2};
 
     use super::*;
 
@@ -467,5 +727,131 @@ mod tests {
 
         assert!(pixels.iter().all(|&p| p == pixels[0]), "uneven fill: {pixels:x?}");
         assert_eq!(pixels[0], 0x007F_7F7F);
+    }
+
+    /// A background covering the frame, a translucent band over it and a small card, the way the
+    /// overlay draws a screenshot, its dimming and the result card.
+    fn scene(card: Pos2) -> Vec<ClippedPrimitive> {
+        let meshes = [
+            rect_mesh(pos2(0.0, 0.0), pos2(64.0, 64.0), Color32::from_rgb(20, 60, 120)),
+            rect_mesh(pos2(0.0, 0.0), pos2(64.0, 20.0), Color32::from_black_alpha(150)),
+            rect_mesh(card, card + vec2(18.0, 12.0), Color32::from_rgb(30, 30, 33)),
+            rect_mesh(card + vec2(2.0, 2.0), card + vec2(9.5, 7.5), RED.gamma_multiply(0.5)),
+        ];
+
+        meshes
+            .into_iter()
+            .map(|mesh| ClippedPrimitive {
+                clip_rect: Rect::EVERYTHING,
+                primitive: Primitive::Mesh(mesh),
+            })
+            .collect()
+    }
+
+    fn draw_scenes(scenes: &[Vec<ClippedPrimitive>], width: usize, height: usize) -> Vec<u32> {
+        let mut renderer = Renderer::default();
+        let mut pixels = vec![0; width * height];
+
+        for (index, primitives) in scenes.iter().enumerate() {
+            let mut textures = TexturesDelta::default();
+            if index == 0 {
+                let white = ColorImage::new([1, 1], vec![Color32::WHITE]);
+                textures
+                    .set
+                    .entry(TextureId::default())
+                    .or_default()
+                    .push(ImageDelta::full(white, TextureOptions::NEAREST));
+            }
+
+            let mut frame = Frame {
+                pixels: &mut pixels,
+                width,
+                height,
+            };
+            renderer.render(&mut frame, primitives, &mut textures, 1.0);
+        }
+
+        pixels
+    }
+
+    #[test]
+    fn redrawing_only_what_changed_matches_drawing_everything() {
+        let (width, height) = (64, 64);
+        let moves = [pos2(10.0, 30.0), pos2(11.5, 31.0), pos2(30.0, 44.0), pos2(30.0, 44.0)];
+        let scenes: Vec<_> = moves.iter().map(|card| scene(*card)).collect();
+
+        let step_by_step = draw_scenes(&scenes, width, height);
+        let from_scratch = draw_scenes(&scenes[scenes.len() - 1..], width, height);
+
+        let differences = step_by_step
+            .iter()
+            .zip(&from_scratch)
+            .filter(|(drawn, expected)| drawn != expected)
+            .count();
+        assert_eq!(differences, 0);
+    }
+
+    #[test]
+    fn a_frame_that_did_not_change_is_left_alone() {
+        let (width, height) = (64, 64);
+        let scenes = [scene(pos2(10.0, 30.0)), scene(pos2(10.0, 30.0))];
+        let mut renderer = Renderer::default();
+        let mut pixels = vec![0; width * height];
+        let mut textures = TexturesDelta::default();
+
+        let white = ColorImage::new([1, 1], vec![Color32::WHITE]);
+        textures
+            .set
+            .entry(TextureId::default())
+            .or_default()
+            .push(ImageDelta::full(white, TextureOptions::NEAREST));
+
+        let mut render = |primitives: &[ClippedPrimitive], textures: &mut TexturesDelta| {
+            let mut frame = Frame {
+                pixels: &mut pixels,
+                width,
+                height,
+            };
+
+            renderer.render(&mut frame, primitives, textures, 1.0)
+        };
+
+        assert!(render(&scenes[0], &mut textures).is_some());
+        assert_eq!(render(&scenes[1], &mut TexturesDelta::default()), None);
+    }
+
+    #[test]
+    fn moving_a_card_only_damages_the_card() {
+        let (width, height) = (64, 64);
+        let mut renderer = Renderer::default();
+        let mut pixels = vec![0; width * height];
+        let mut textures = TexturesDelta::default();
+
+        let white = ColorImage::new([1, 1], vec![Color32::WHITE]);
+        textures
+            .set
+            .entry(TextureId::default())
+            .or_default()
+            .push(ImageDelta::full(white, TextureOptions::NEAREST));
+
+        let mut render = |primitives: &[ClippedPrimitive], textures: &mut TexturesDelta| {
+            let mut frame = Frame {
+                pixels: &mut pixels,
+                width,
+                height,
+            };
+
+            renderer.render(&mut frame, primitives, textures, 1.0)
+        };
+
+        render(&scene(pos2(10.0, 30.0)), &mut textures);
+        let damage = render(&scene(pos2(12.0, 30.0)), &mut TexturesDelta::default());
+
+        // The two card positions, with a pixel of slack around them.
+        let expected = Damage {
+            rows: 29..43,
+            columns: 9..31,
+        };
+        assert_eq!(damage, Some(expected));
     }
 }

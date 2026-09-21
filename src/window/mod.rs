@@ -4,7 +4,10 @@
 //! on some setups, so the overlay and the settings window render egui into a pixel buffer and
 //! show it the way plain desktop apps do (GDI on Windows, shared memory on X11 and Wayland).
 
+#[cfg(not(test))]
 mod raster;
+#[cfg(test)]
+pub mod raster;
 
 use std::cell::RefCell;
 use std::num::NonZeroU32;
@@ -115,6 +118,12 @@ struct AppWindow {
     input: egui_winit::State,
     viewport: ViewportInfo,
     renderer: Renderer,
+    /// The frame as last drawn. softbuffer does not promise that a presented buffer keeps its
+    /// contents, while the renderer only redraws what changed, so the frame is kept here.
+    canvas: Vec<u32>,
+    /// Where the buffer presented last time was; softbuffer hands out the same memory again as
+    /// long as it is not double buffering, and then only the changed rows have to be copied.
+    presented: usize,
     repaint_at: Option<Instant>,
     shown: bool,
 }
@@ -125,6 +134,14 @@ where
     Attributes: FnOnce(&ActiveEventLoop) -> Vec<WindowAttributes>,
     Create: FnOnce(&[egui::Context]) -> A,
 {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, _: StartCause) {
+        // Exiting in the iteration that dropped the windows would leave them on screen: winit
+        // destroys dropped Wayland windows only in its next iteration.
+        if self.closing {
+            event_loop.exit();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(attributes), Some(create)) = (self.attributes.take(), self.create.take()) else {
             return;
@@ -157,14 +174,6 @@ where
             Ok(false) => {}
             Ok(true) => self.close(),
             Err(e) => self.fail(e),
-        }
-    }
-
-    fn new_events(&mut self, event_loop: &ActiveEventLoop, _: StartCause) {
-        // Exiting in the iteration that dropped the windows would leave them on screen: winit
-        // destroys dropped Wayland windows only in its next iteration.
-        if self.closing {
-            event_loop.exit();
         }
     }
 
@@ -264,6 +273,8 @@ impl AppWindow {
             input,
             viewport: ViewportInfo::default(),
             renderer: Renderer::default(),
+            canvas: Vec::new(),
+            presented: 0,
             repaint_at: None,
             shown: false,
         })
@@ -293,20 +304,40 @@ impl AppWindow {
         let size = self.window.inner_size();
 
         if let (Some(width), Some(height)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
-            self.surface.resize(width, height).map_err(|e| anyhow!("{e}"))?;
-            let mut buffer = self.surface.buffer_mut().map_err(|e| anyhow!("{e}"))?;
+            let (width, height) = (width.get() as usize, height.get() as usize);
+            self.canvas.resize(width * height, 0);
 
             let mut frame = Frame {
-                pixels: &mut buffer,
-                width: width.get() as usize,
-                height: height.get() as usize,
+                pixels: &mut self.canvas,
+                width,
+                height,
             };
-            self.renderer.render(
+            let damage = self.renderer.render(
                 &mut frame,
                 &primitives,
                 &mut output.textures_delta,
                 output.pixels_per_point,
             );
+
+            let (columns, rows) = (width as u32, height as u32);
+            self.surface
+                .resize(columns.try_into()?, rows.try_into()?)
+                .map_err(|e| anyhow!("{e}"))?;
+            let mut buffer = self.surface.buffer_mut().map_err(|e| anyhow!("{e}"))?;
+            let same_buffer =
+                std::mem::replace(&mut self.presented, buffer.as_ptr() as usize) == buffer.as_ptr() as usize;
+
+            match damage.filter(|_| same_buffer) {
+                Some(damage) => {
+                    for row in damage.rows {
+                        let at = row * width + damage.columns.start;
+                        let end = row * width + damage.columns.end;
+
+                        buffer[at..end].copy_from_slice(&self.canvas[at..end]);
+                    }
+                }
+                None => buffer.copy_from_slice(&self.canvas),
+            }
 
             if !self.shown {
                 self.window.set_visible(true);
@@ -324,6 +355,7 @@ impl AppWindow {
             };
             self.renderer
                 .render(&mut frame, &[], &mut output.textures_delta, output.pixels_per_point);
+            self.presented = 0;
         }
 
         self.repaint_at = match repaint_delay {
