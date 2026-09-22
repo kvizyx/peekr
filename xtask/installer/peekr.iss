@@ -49,6 +49,12 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+; What the app's updater may have left behind: a download it had not installed yet, and the
+; executable it renamed aside to make room for a new one.
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\.update"
+Type: files; Name: "{app}\*.replaced"
+
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\peekr.exe"
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"

@@ -1,9 +1,11 @@
 [package]
 name = "peekr"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Select a screen region and copy the recognized text"
 license = "MIT"
+# The updater builds its download URLs from this.
+repository = "https://github.com/kvizyx/peekr"
 rust-version = "1.95"
 
 [dependencies]
@@ -19,10 +21,16 @@ egui-winit = { version = "0.36", default-features = false, features = [
     "x11",
 ] }
 env_logger = "0.11.11"
+# Update payloads are downloaded gzip-compressed.
+flate2 = "1.1"
 global-hotkey = "0.8"
+# Already in the lock file; not worth a fourth handwritten copy of encode and decode.
+hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 imageproc = { version = "0.27", default-features = false }
 log = "0.4.34"
+# Already pulled in by rustls; the updater verifies release signatures with its ed25519.
+ring = "0.17"
 # rustls instead of the default native-tls, so building on Linux does not need OpenSSL headers.
 ort = { version = "2.0.0-rc.13", default-features = false, features = [
     "std",
@@ -39,9 +47,12 @@ softbuffer = { version = "0.4", default-features = false, features = [
     "x11-dlopen",
 ] }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
 toml = "1"
 # ksni talks to the tray over D-Bus on Linux instead of pulling in GTK.
 tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
+# Already pulled in by ort, so the updater's HTTP client costs no extra dependencies.
+ureq = "3.4"
 winit = { version = "0.30", default-features = false, features = [
     "rwh_06",
     "wayland",
@@ -57,8 +68,12 @@ winresources = { path = "winresources" }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    # CreateMutexW takes security attributes, which live behind this feature.
+    "Win32_Security",
     "Win32_System_Console",
     "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",

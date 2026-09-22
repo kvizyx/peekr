@@ -2814,23 +2814,28 @@ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "peekr"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
  "egui",
  "egui-winit",
  "env_logger",
+ "flate2",
  "global-hotkey",
+ "hex",
  "image",
  "imageproc",
  "libc",
  "log",
  "ort",
+ "ring",
  "serde",
+ "sha2",
  "softbuffer",
  "toml",
  "tray-icon",
+ "ureq",
  "windows-sys 0.61.2",
  "winit",
  "winresources",
@@ -4845,10 +4850,14 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "flate2",
+ "hex",
  "image",
  "resvg",
+ "ring",
+ "serde",
  "sha2",
  "tar",
+ "toml",
  "ureq",
  "zip",
 ]

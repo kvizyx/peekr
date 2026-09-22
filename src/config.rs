@@ -12,12 +12,23 @@ use crate::shortcut::Shortcut;
 
 const FILE_NAME: &str = "config.toml";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 // Missing fields fall back to defaults, so older config files keep working.
 #[serde(default)]
 pub struct Config {
     /// Global shortcut that starts a capture.
     pub hotkey: Shortcut,
+    /// Whether the app installs newer releases of itself when it starts.
+    pub updates: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            hotkey: Shortcut::default(),
+            updates: true,
+        }
+    }
 }
 
 impl Config {
@@ -66,6 +77,7 @@ mod tests {
     fn round_trips_through_toml() {
         let config = Config {
             hotkey: "Ctrl+Alt+F9".parse().expect("valid shortcut"),
+            updates: false,
         };
 
         let text = toml::to_string(&config).expect("serializable");

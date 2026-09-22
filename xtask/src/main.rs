@@ -3,9 +3,13 @@
 //! Status output goes to stderr, like cargo's own.
 
 mod dist;
+mod hash;
 mod icon;
 mod installer;
 mod models;
+mod process;
+mod release;
+mod signing;
 mod winget;
 
 use std::path::{Path, PathBuf};
@@ -20,7 +24,11 @@ tasks:
   dist      build a release archive for this platform into target/dist
             (needs downloaded models and cargo-about: cargo install cargo-about --features cli)
   installer build the Windows installer into target/dist (needs Inno Setup 6)
-  winget    write the winget manifests for a release into target/winget";
+  winget    write the winget manifests for a release into target/winget
+  keygen <file>  write a signing key for releases, and print its public half
+  sign <files>   sign release manifests with PEEKR_SIGNING_KEY, and check the result
+  release <tag>  sign a draft release's manifests, upload the signatures, and check it is complete
+                 (needs gh, and PEEKR_SIGNING_KEY set)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,6 +38,9 @@ fn main() -> ExitCode {
         ["icon"] => icon::render(project_root()),
         ["dist"] => dist::package(project_root()),
         ["installer"] => installer::build(project_root()),
+        ["keygen", file] => signing::keygen(Path::new(file)),
+        ["sign", manifests @ ..] if !manifests.is_empty() => signing::sign_all(project_root(), manifests),
+        ["release", tag] => release::release(project_root(), tag),
         ["winget"] => winget::manifests(project_root(), None),
         ["winget", version] => winget::manifests(project_root(), Some(version)),
         [] | ["help" | "--help" | "-h"] => {

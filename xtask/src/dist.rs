@@ -3,10 +3,14 @@
 //! The archive `target/dist/peekr-<version>-<os>-<arch>` (.zip on Windows, .tar.gz elsewhere)
 //! contains a directory of the same name with the executable, the models, docs and license
 //! files. The app finds `models/` next to its executable, so it runs right after unpacking.
+//!
+//! `target/dist/update/` holds the same files once more, gzip-compressed one by one, next to a
+//! manifest of what they are. The app's updater downloads only the ones that differ from the
+//! files it already has; see `src/update.rs`.
 
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufWriter};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
@@ -14,13 +18,19 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Context, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use serde::Serialize;
 use zip::write::SimpleFileOptions;
+
+use crate::{hash, process};
 
 const PACKAGE: &str = "peekr";
 /// Project files copied into the root of the archive.
 const DOCS: &[&str] = &["README.md", "LICENSE"];
 /// License files that are not generated, relative to the project root.
 const ONNXRUNTIME_LICENSE: &str = "xtask/licenses/onnxruntime-LICENSE.txt";
+/// Everything the updater uses is named with this prefix, so that the release page keeps it
+/// apart from the archives people download by hand.
+const UPDATE_PREFIX: &str = "update";
 
 /// A file to pack: where it comes from and where it goes inside the archive.
 struct Entry {
@@ -29,8 +39,26 @@ struct Entry {
     executable: bool,
 }
 
+/// What a release consists of, read by the app's updater. Mirrors `Manifest` in `src/update.rs`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Manifest {
+    version: String,
+    files: Vec<ManifestFile>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ManifestFile {
+    path: String,
+    sha256: String,
+    /// Of the compressed download, which is what the app's progress bar measures.
+    size: u64,
+    executable: bool,
+    url: String,
+}
+
 pub fn package(root: &Path) -> Result<()> {
     let build = build(root)?;
+    write_update_files(root, &build)?;
 
     let archive = if cfg!(windows) {
         let archive = build.dist_dir.join(format!("{}.zip", build.prefix));
@@ -55,6 +83,8 @@ pub fn package(root: &Path) -> Result<()> {
 /// A release build, with everything that goes into a package.
 pub struct Build {
     pub version: String,
+    /// The operating system and architecture the build is for, as `windows-x86_64`.
+    platform: String,
     pub prefix: String,
     pub dist_dir: PathBuf,
     entries: Vec<Entry>,
@@ -93,9 +123,11 @@ pub fn build(root: &Path) -> Result<Build> {
     fs::create_dir_all(&dist_dir)?;
 
     eprintln!("building {PACKAGE} {version} in release mode");
-    run(cargo()
-        .args(["build", "--release", "--locked", "--package", PACKAGE])
-        .current_dir(root))?;
+    process::run(
+        cargo()
+            .args(["build", "--release", "--locked", "--package", PACKAGE])
+            .current_dir(root),
+    )?;
 
     let third_party_licenses = dist_dir.join("THIRD-PARTY-LICENSES.html");
     generate_third_party_licenses(root, &third_party_licenses)?;
@@ -107,6 +139,7 @@ pub fn build(root: &Path) -> Result<Build> {
 
     Ok(Build {
         version,
+        platform,
         prefix,
         dist_dir,
         entries,
@@ -117,30 +150,81 @@ fn cargo() -> Command {
     Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
 }
 
-fn run(command: &mut Command) -> Result<()> {
-    let status = command.status().with_context(|| format!("starting {command:?}"))?;
-
-    if !status.success() {
-        bail!("{command:?} failed with {status}");
-    }
-
-    Ok(())
-}
-
 /// Reads `version` from the `[package]` section of the project's `Cargo.toml`.
 pub fn package_version(root: &Path) -> Result<String> {
-    let manifest = fs::read_to_string(root.join("Cargo.toml"))?;
+    package_field(root, "version")
+}
 
-    let version = manifest
+/// Reads a string field from the `[package]` section of the project's `Cargo.toml`.
+fn package_field(root: &Path, field: &str) -> Result<String> {
+    let manifest = fs::read_to_string(root.join("Cargo.toml"))?;
+    let prefix = format!("{field} = \"");
+
+    let value = manifest
         .lines()
         .skip_while(|line| line.trim() != "[package]")
         .skip(1)
         .take_while(|line| !line.starts_with('['))
-        .find_map(|line| line.strip_prefix("version = \"")?.strip_suffix('"'));
+        .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'));
 
-    version
+    value
         .map(str::to_owned)
-        .context("no version in the [package] section of Cargo.toml")
+        .with_context(|| format!("no {field} in the [package] section of Cargo.toml"))
+}
+
+/// Writes what the updater needs into `target/dist/update/`: every file of the release on its
+/// own, gzip-compressed, and a manifest saying where each one goes and what it hashes to.
+///
+/// The file names are the names they are uploaded to the GitHub release under, which is what
+/// makes the URLs in the manifest predictable.
+fn write_update_files(root: &Path, build: &Build) -> Result<()> {
+    let repository = package_field(root, "repository")?;
+    let platform = &build.platform;
+
+    let update_dir = build.dist_dir.join(UPDATE_PREFIX);
+    fs::create_dir_all(&update_dir)?;
+
+    let mut files = Vec::with_capacity(build.entries.len());
+
+    for entry in &build.entries {
+        // The name has to be unique across the whole release, where every platform's files meet.
+        let asset = format!("{UPDATE_PREFIX}-{platform}-{}.gz", entry.name.replace('/', "-"));
+        let compressed = update_dir.join(&asset);
+        let sha256 = compress(&entry.source, &compressed)?;
+
+        files.push(ManifestFile {
+            path: entry.name.clone(),
+            sha256,
+            size: fs::metadata(&compressed)?.len(),
+            executable: entry.executable,
+            url: format!("{repository}/releases/download/v{}/{asset}", build.version),
+        });
+    }
+
+    let manifest = Manifest {
+        version: build.version.clone(),
+        files,
+    };
+
+    let path = update_dir.join(format!("{UPDATE_PREFIX}-{platform}.toml"));
+    fs::write(&path, toml::to_string(&manifest)?)?;
+    crate::signing::sign(&path)?;
+
+    eprintln!("wrote {} update files and {}", manifest.files.len(), path.display());
+
+    Ok(())
+}
+
+/// Gzip-compresses a file, returning the SHA-256 of its contents. The updater checks the file it
+/// unpacks, not the download, so that a re-compression can never look like a corrupted release.
+fn compress(source: &Path, destination: &Path) -> Result<String> {
+    let input = File::open(source).with_context(|| format!("opening {}", source.display()))?;
+    let mut output = GzEncoder::new(BufWriter::new(File::create(destination)?), Compression::best());
+
+    let (_, sha256) = hash::copy_and_hash(input, &mut output)?;
+    output.finish()?.flush()?;
+
+    Ok(sha256)
 }
 
 fn generate_third_party_licenses(root: &Path, output: &Path) -> Result<()> {
@@ -157,7 +241,7 @@ fn generate_third_party_licenses(root: &Path, output: &Path) -> Result<()> {
         .arg(output)
         .arg(licenses_dir.join("about.hbs"));
 
-    run(&mut command).context("cargo-about is required: cargo install cargo-about --features cli")
+    process::run(&mut command).context("cargo-about is required: cargo install cargo-about --features cli")
 }
 
 fn collect_entries(root: &Path, binary: PathBuf, third_party_licenses: PathBuf) -> Result<Vec<Entry>> {

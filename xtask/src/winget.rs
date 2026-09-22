@@ -5,12 +5,12 @@
 //! installer of that release on GitHub, whose SHA-256 is taken from the local build when it is
 //! there and downloaded otherwise.
 
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
-use sha2::{Digest, Sha256};
+
+use crate::hash;
 
 const IDENTIFIER: &str = "kvizyx.Peekr";
 const PUBLISHER: &str = "kvizyx";
@@ -65,7 +65,7 @@ fn installer_sha256(root: &Path, installer: &str, url: &str) -> Result<String> {
     let local = crate::target_dir(root).join("dist").join(installer);
     if local.is_file() {
         eprintln!("hashing {}", local.display());
-        return sha256_of_file(&local);
+        return hash::sha256_of_file(&local);
     }
 
     eprintln!("downloading {url}");
@@ -74,37 +74,7 @@ fn installer_sha256(root: &Path, installer: &str, url: &str) -> Result<String> {
         .call()
         .with_context(|| format!("requesting {url}"))?;
 
-    let mut hasher = Sha256::new();
-    let mut body = response.into_body().into_reader();
-    let mut buffer = vec![0; 1 << 20];
-
-    loop {
-        let read = body.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-
-        hasher.update(&buffer[..read]);
-    }
-
-    Ok(crate::models::hex(&hasher.finalize()))
-}
-
-fn sha256_of_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; 1 << 20];
-
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-
-        hasher.update(&buffer[..read]);
-    }
-
-    Ok(crate::models::hex(&hasher.finalize()))
+    hash::sha256(response.into_body().into_reader())
 }
 
 fn version_manifest(version: &str) -> String {

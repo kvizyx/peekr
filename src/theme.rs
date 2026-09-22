@@ -1,6 +1,6 @@
 //! Colors and shapes shared by the overlay and the settings window.
 
-use egui::{Button, Color32, CornerRadius, Frame, Margin, RichText, Shadow, Stroke, Visuals, vec2};
+use egui::{Color32, CornerRadius, Frame, Margin, RichText, Sense, Shadow, Stroke, Visuals, pos2};
 
 pub const ACCENT: Color32 = Color32::from_rgb(214, 104, 38);
 pub const BACKGROUND: Color32 = Color32::from_rgb(30, 30, 33);
@@ -15,9 +15,9 @@ pub const MUTED: Color32 = Color32::from_rgb(150, 150, 158);
 pub const RADIUS: u8 = 10;
 /// Corner radius of the smaller shapes inside a panel: buttons and key caps.
 pub const SMALL_RADIUS: u8 = 6;
-pub const BUTTON_HEIGHT: f32 = 32.0;
-/// Space between a button's label and its edges.
-pub const BUTTON_PADDING: egui::Vec2 = egui::Vec2::new(14.0, 6.0);
+pub const TOGGLE_SIZE: egui::Vec2 = egui::Vec2::new(40.0, 22.0);
+/// How far the knob of a switch stays from the edge of its track.
+const TOGGLE_KNOB_INSET: f32 = 3.0;
 
 /// A panel in the app's colors: the result card and the usage hint.
 pub fn card(margin: Margin) -> Frame {
@@ -83,12 +83,38 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 }
 
-/// The button for the main action of a window, such as copying the recognized text.
-pub fn accent_button(label: &str) -> Button<'static> {
-    Button::new(RichText::new(label.to_owned()).color(Color32::WHITE).strong())
-        .fill(ACCENT)
-        .corner_radius(CornerRadius::same(SMALL_RADIUS))
-        .min_size(vec2(0.0, BUTTON_HEIGHT))
+/// A switch for a setting that is either on or off. egui's checkbox reads as one item of a list;
+/// a switch reads as something that stays the way it is put.
+pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(TOGGLE_SIZE, Sense::click());
+
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+
+    let radius = rect.height() / 2.0;
+    let (track, knob) = if *on { (ACCENT, Color32::WHITE) } else { (RAISED, MUTED) };
+    let border = if response.hovered() {
+        TEXT.gamma_multiply(0.3)
+    } else {
+        BORDER
+    };
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(radius as u8), track);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(radius as u8),
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+
+    let travelled = if *on { rect.width() - rect.height() } else { 0.0 };
+    let center = pos2(rect.left() + radius + travelled, rect.center().y);
+    painter.circle_filled(center, radius - TOGGLE_KNOB_INSET, knob);
+
+    response
 }
 
 /// Draws one key of a shortcut as a key cap.

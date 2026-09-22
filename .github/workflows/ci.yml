@@ -2,16 +2,20 @@ name: CI
 
 # Changes that only touch documentation do not affect the build.
 on:
+  # Called by the release workflow, which will not build a release the checks do not pass.
+  workflow_call:
   push:
     branches: [main]
     paths-ignore:
       - README.md
       - AGENTS.md
+      - RELEASE.md
       - LICENSE
   pull_request:
     paths-ignore:
       - README.md
       - AGENTS.md
+      - RELEASE.md
       - LICENSE
 
 permissions:
@@ -66,12 +70,19 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: Test
-    runs-on: ubuntu-24.04
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      # Windows too: replacing the executable of a running process, which the updater is built
+      # around, only behaves the way it does there.
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \

@@ -4,11 +4,12 @@
 //! Every file is pinned to a revision and verified by SHA-256.
 
 use std::fs::{self, File};
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
+
+use crate::hash;
 
 macro_rules! rapidocr {
     ($path:literal) => {
@@ -109,8 +110,6 @@ const FILES: &[ModelFile] = &[
     },
 ];
 
-const CHUNK_SIZE: usize = 1 << 16;
-
 pub fn download(models_dir: &Path) -> Result<()> {
     let mut failed = 0;
 
@@ -133,7 +132,7 @@ pub fn download(models_dir: &Path) -> Result<()> {
 fn fetch(file: &ModelFile, models_dir: &Path) -> Result<()> {
     let dest = models_dir.join(file.path);
 
-    if dest.is_file() && sha256_of_file(&dest)? == file.sha256 {
+    if dest.is_file() && hash::sha256_of_file(&dest)? == file.sha256 {
         eprintln!("skip  {} (up to date)", file.path);
     } else {
         eprintln!("fetch {}", file.path);
@@ -159,27 +158,12 @@ fn download_verified(url: &str, dest: &Path, expected_sha256: &str) -> Result<()
         .header("User-Agent", "peekr-xtask")
         .call()
         .with_context(|| format!("requesting {url}"))?;
-    let mut body = response.into_body().into_reader();
 
     let mut out = BufWriter::new(File::create(&part)?);
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; CHUNK_SIZE];
-    let mut size = 0;
-
-    loop {
-        let read = body.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-
-        out.write_all(&buffer[..read])?;
-        hasher.update(&buffer[..read]);
-        size += read;
-    }
+    let (size, actual) = hash::copy_and_hash(response.into_body().into_reader(), &mut out)?;
     out.flush()?;
     drop(out);
 
-    let actual = hex(&hasher.finalize());
     if actual != expected_sha256 {
         fs::remove_file(&part)?;
         bail!("SHA-256 mismatch: expected {expected_sha256}, got {actual}");
@@ -191,7 +175,7 @@ fn download_verified(url: &str, dest: &Path, expected_sha256: &str) -> Result<()
     Ok(())
 }
 
-fn format_size(bytes: usize) -> String {
+fn format_size(bytes: u64) -> String {
     let bytes = bytes as f64;
 
     if bytes < f64::from(1 << 20) {
@@ -199,35 +183,6 @@ fn format_size(bytes: usize) -> String {
     } else {
         format!("{:.1} MB", bytes / f64::from(1 << 20))
     }
-}
-
-fn sha256_of_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; CHUNK_SIZE];
-
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-
-        hasher.update(&buffer[..read]);
-    }
-
-    Ok(hex(&hasher.finalize()))
-}
-
-pub fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            // Writing into a String cannot fail.
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 /// Reads the `character_dict` list from a PaddleOCR `inference.yml`. The dictionary entries use
@@ -276,10 +231,5 @@ mod tests {
     #[test]
     fn missing_dictionary_is_an_error() {
         assert!(extract_dictionary("PostProcess:\n  name: CTCLabelDecode\n").is_err());
-    }
-
-    #[test]
-    fn hex_encodes_bytes() {
-        assert_eq!(hex(&[0x00, 0xab, 0xff]), "00abff");
     }
 }

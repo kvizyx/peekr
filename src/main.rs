@@ -14,6 +14,7 @@ mod settings;
 mod shortcut;
 mod theme;
 mod tray;
+mod update;
 mod window;
 mod worker;
 
@@ -23,6 +24,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use crate::cli::{Args, Command};
+use crate::config::Config;
 use crate::ocr::models::{ModelStore, OcrConfig};
 
 fn main() -> Result<()> {
@@ -35,20 +37,40 @@ fn main() -> Result<()> {
     platform::init_dpi_awareness();
 
     let args = Args::parse(raw_args)?;
-    let store = ModelStore::new(models_dir()?);
 
     match args.command {
-        Command::Tray => {
-            app::run_tray(store, args.ocr);
-            Ok(())
-        }
-        Command::Capture => app::capture_once(store, args.ocr),
-        Command::Image(path) => recognize_file(&path, &store, &args.ocr),
+        Command::Tray => run_tray(args.ocr),
+        Command::Capture => app::capture_once(ModelStore::new(models_dir()?), args.ocr),
+        Command::Image(path) => recognize_file(&path, &ModelStore::new(models_dir()?), &args.ocr),
         Command::ListModels => {
-            print_models(&store);
+            print_models(&ModelStore::new(models_dir()?));
             Ok(())
         }
     }
+}
+
+/// Runs the tray app, on the newest release it can install.
+///
+/// Only one may run at a time, or there would be two tray icons fighting over the same hotkey.
+/// A capture is not held to that: on Wayland the app cannot register a hotkey itself, so
+/// `peekr --capture` is bound to a system shortcut and runs alongside the tray app.
+fn run_tray(ocr: OcrConfig) -> Result<()> {
+    let Some(instance) = platform::single_instance() else {
+        log::info!("peekr is already running");
+        return Ok(());
+    };
+
+    let config = Config::load();
+
+    // Before the models are looked for, since an update can bring new ones along.
+    if update::install(config.updates) {
+        // The process that takes over registers itself, so this one has to stand down first.
+        drop(instance);
+        return update::restart();
+    }
+
+    app::run_tray(ModelStore::new(models_dir()?), ocr, config);
+    Ok(())
 }
 
 #[expect(clippy::print_stdout, reason = "CLI mode prints the recognized text")]

@@ -39,10 +39,7 @@ pub fn build(root: &Path) -> Result<()> {
         .arg(format!("/DIconFile={}", root.join("assets/icon.ico").display()))
         .arg(&script);
 
-    let status = command.status().with_context(|| format!("starting {command:?}"))?;
-    if !status.success() {
-        bail!("{command:?} failed with {status}");
-    }
+    crate::process::run(&mut command)?;
 
     let installer = build.dist_dir.join(format!("{name}.exe"));
     let size = fs::metadata(&installer)?.len() as f64 / f64::from(1 << 20);

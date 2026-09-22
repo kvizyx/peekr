@@ -6,28 +6,35 @@ use anyhow::Result;
 use egui::{Align, Button, Event, Frame, Key, Layout, Margin, RichText, Spinner, ViewportCommand, vec2};
 use winit::window::{Icon, WindowButtons};
 
+use crate::config::Config;
 use crate::shortcut::Shortcut;
 use crate::{icon, theme, window};
 
-const WINDOW_SIZE: [f32; 2] = [440.0, 212.0];
+const WINDOW_SIZE: [f32; 2] = [440.0, 268.0];
 const WINDOW_MARGIN: Margin = Margin::same(20);
 const SECTION_MARGIN: Margin = Margin::same(16);
 const BUTTON_HEIGHT: f32 = 30.0;
 /// How often the window checks whether the app needs it closed.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Shows the settings window until the user closes it, or until `interrupted` reports that the
-/// app has something else to do, such as a capture.
-///
-/// `apply` is called with every recorded hotkey and reports why it cannot be used; the window
-/// shows the result. `recording` is called when the window starts and stops waiting for a new
-/// shortcut, so that the app can release the current hotkey meanwhile.
-pub fn edit_hotkey(
-    current: Shortcut,
-    apply: &mut dyn FnMut(Shortcut) -> Result<()>,
-    recording: &mut dyn FnMut(bool),
-    interrupted: &dyn Fn() -> bool,
-) -> Result<()> {
+/// What the window does with the settings it changes. The app owns the config, so every change
+/// goes back to it instead of being written here.
+pub struct Handlers<'a> {
+    /// Called with every recorded hotkey; reports why it cannot be used, which the window shows.
+    pub apply: &'a mut dyn FnMut(Shortcut) -> Result<()>,
+    /// Called when the window starts and stops waiting for a new shortcut, so that the app can
+    /// release the current hotkey meanwhile.
+    pub recording: &'a mut dyn FnMut(bool),
+    /// Called when automatic updates are turned on or off.
+    pub set_updates: &'a mut dyn FnMut(bool),
+    /// Whether the app has something else to do, such as a capture.
+    pub interrupted: &'a dyn Fn() -> bool,
+}
+
+/// Shows the settings window until the user closes it, or until the app needs it gone.
+pub fn open(current: &Config, handlers: Handlers<'_>) -> Result<()> {
+    let current = current.clone();
+
     window::run(
         |event_loop| {
             let icon = Icon::from_rgba(icon::rgba(), icon::SIZE, icon::SIZE)
@@ -48,13 +55,12 @@ pub fn edit_hotkey(
             }
 
             SettingsApp {
-                hotkey: current,
+                hotkey: current.hotkey,
+                updates: current.updates,
                 recording: false,
                 super_held: false,
                 message: None,
-                apply,
-                on_recording: recording,
-                interrupted,
+                handlers,
             }
         },
     )
@@ -67,14 +73,13 @@ enum Message {
 
 struct SettingsApp<'a> {
     hotkey: Shortcut,
+    updates: bool,
     /// Waiting for the user to press the new shortcut.
     recording: bool,
     /// egui's `Modifiers` has no Windows / Super key, so its presses are tracked separately.
     super_held: bool,
     message: Option<Message>,
-    apply: &'a mut dyn FnMut(Shortcut) -> Result<()>,
-    on_recording: &'a mut dyn FnMut(bool),
-    interrupted: &'a dyn Fn() -> bool,
+    handlers: Handlers<'a>,
 }
 
 impl window::App for SettingsApp<'_> {
@@ -88,7 +93,7 @@ impl window::App for SettingsApp<'_> {
 
         // Nothing here animates, so without this the window would not notice the app waiting.
         ctx.request_repaint_after(POLL_INTERVAL);
-        if (self.interrupted)() {
+        if (self.handlers.interrupted)() {
             self.set_recording(false);
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
@@ -101,10 +106,12 @@ impl window::App for SettingsApp<'_> {
                 ui.set_height(ui.available_height());
 
                 self.show_hotkey(ui);
+                ui.add_space(12.0);
+
+                self.show_updates(ui);
                 ui.add_space(10.0);
 
                 self.show_message(ui);
-                self.show_footer(ui);
             });
     }
 }
@@ -163,6 +170,35 @@ impl SettingsApp<'_> {
             });
     }
 
+    /// The switch for automatic updates, and what turning it on means.
+    fn show_updates(&mut self, ui: &mut egui::Ui) {
+        theme::section(SECTION_MARGIN).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Enable automatic updates")
+                        .size(14.0)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::toggle(ui, &mut self.updates).changed() {
+                        (self.handlers.set_updates)(self.updates);
+                    }
+                });
+            });
+
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("New releases are downloaded and installed when application starts.")
+                    .size(13.0)
+                    .color(theme::MUTED),
+            );
+        });
+    }
+
     /// The result of the last change, or what to do when nothing has been changed yet.
     fn show_message(&self, ui: &mut egui::Ui) {
         let (text, color) = match &self.message {
@@ -174,24 +210,6 @@ impl SettingsApp<'_> {
         ui.label(RichText::new(text).size(13.0).color(color));
     }
 
-    /// The window's only action, in the bottom right corner.
-    fn show_footer(&mut self, ui: &mut egui::Ui) {
-        let space = ui.available_height() - theme::BUTTON_HEIGHT;
-        ui.add_space(space.max(0.0));
-
-        ui.horizontal(|ui| {
-            ui.set_min_height(theme::BUTTON_HEIGHT);
-            ui.spacing_mut().button_padding = theme::BUTTON_PADDING;
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(theme::accent_button("Reset to default")).clicked() {
-                    self.set_recording(false);
-                    self.apply(Shortcut::default());
-                }
-            });
-        });
-    }
-
     /// Starts or stops waiting for a new shortcut, telling the app so that it can release the
     /// current hotkey while the next press is being recorded.
     fn set_recording(&mut self, recording: bool) {
@@ -200,7 +218,7 @@ impl SettingsApp<'_> {
         }
 
         self.recording = recording;
-        (self.on_recording)(recording);
+        (self.handlers.recording)(recording);
     }
 
     fn track_super_key(&mut self, ctx: &egui::Context) {
@@ -262,7 +280,7 @@ impl SettingsApp<'_> {
 
         // A saved hotkey speaks for itself: the key caps above show it. Only a warning about it
         // is worth a line.
-        self.message = match (self.apply)(shortcut) {
+        self.message = match (self.handlers.apply)(shortcut) {
             Ok(()) => {
                 self.hotkey = shortcut;
                 shortcut.warning().map(|warning| Message::Info(warning.to_owned()))

@@ -1,6 +1,6 @@
-# AGENTS.md
+# Peekr - AGENTS.md
 
-This file provides guidance for LLM coding agents working with this repository (Peekr).
+This file provides guidance for LLM coding agents working with this repository.
 
 ## Project overview
 

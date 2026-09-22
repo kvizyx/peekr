@@ -44,7 +44,7 @@ impl EventSender {
     }
 }
 
-pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
+pub fn run_tray(store: ModelStore, ocr_config: OcrConfig, mut config: Config) {
     let event_loop = EventLoop::new();
     let (sender, events) = channel();
     let waiting = Arc::new(AtomicBool::new(false));
@@ -57,8 +57,6 @@ pub fn run_tray(store: ModelStore, ocr_config: OcrConfig) {
     let worker = OcrWorker::spawn(store, ocr_config);
     // Kept open for the app's lifetime: on Linux the copied text lives only as long as this handle.
     let mut clipboard = Clipboard::default();
-
-    let mut config = Config::load();
 
     // Both may be unavailable on Linux: no global hotkeys on Wayland, no tray host on GNOME
     // without the AppIndicator extension.
@@ -192,7 +190,7 @@ fn create_tray(sender: &EventSender, hotkey: Option<Shortcut>) -> Result<Tray> {
 /// reports that another request is waiting. The hotkey keeps working meanwhile: it is released
 /// only while a new one is being recorded, where it would fire instead of being recorded.
 fn open_settings(config: &mut Config, hotkey: Option<&mut GlobalHotkey>, interrupted: &dyn Fn() -> bool) {
-    let current = config.hotkey;
+    let current = config.clone();
     let config = RefCell::new(config);
     let hotkey = RefCell::new(hotkey);
 
@@ -220,7 +218,23 @@ fn open_settings(config: &mut Config, hotkey: Option<&mut GlobalHotkey>, interru
         }
     };
 
-    if let Err(e) = settings::edit_hotkey(current, &mut apply, &mut recording, interrupted) {
+    let mut set_updates = |enabled: bool| {
+        let mut config = config.borrow_mut();
+        config.updates = enabled;
+
+        if let Err(e) = config.save() {
+            log::error!("{e:#}");
+        }
+    };
+
+    let handlers = settings::Handlers {
+        apply: &mut apply,
+        recording: &mut recording,
+        set_updates: &mut set_updates,
+        interrupted,
+    };
+
+    if let Err(e) = settings::open(&current, handlers) {
         log::error!("{e:#}");
     }
 }

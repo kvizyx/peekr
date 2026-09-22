@@ -36,6 +36,12 @@ pub trait App {
     fn take_repaint(&mut self, _window: usize) -> bool {
         false
     }
+
+    /// How far to round the window's own corners, in points; zero leaves it rectangular.
+    /// Only a window that draws its own frame needs this, as the system shapes the others.
+    fn corner_radius(&self, _window: usize) -> f32 {
+        0.0
+    }
 }
 
 thread_local! {
@@ -126,6 +132,9 @@ struct AppWindow {
     presented: usize,
     repaint_at: Option<Instant>,
     shown: bool,
+    /// Corner radius for a window that draws its own frame, in physical pixels; zero for the rest.
+    /// Applied when the window is first shown, as winit rewrites its styles until then.
+    frame_radius: u32,
 }
 
 impl<A, Attributes, Create> ApplicationHandler for Runner<A, Attributes, Create>
@@ -159,6 +168,11 @@ where
 
         let contexts: Vec<_> = windows.iter().map(|w| w.ctx.clone()).collect();
         let mut app = create(&contexts);
+
+        for (index, window) in windows.iter_mut().enumerate() {
+            let radius = app.corner_radius(index) * window.window.scale_factor() as f32;
+            window.frame_radius = radius.round() as u32;
+        }
 
         let redrawn = windows
             .iter_mut()
@@ -277,6 +291,7 @@ impl AppWindow {
             presented: 0,
             repaint_at: None,
             shown: false,
+            frame_radius: 0,
         })
     }
 
@@ -291,13 +306,23 @@ impl AppWindow {
         let mut output = ctx.run_ui(input, |ui| app.ui(index, ui));
         self.input.handle_platform_output(&self.window, output.platform_output);
 
-        let (close, repaint_delay) =
+        let (close, drag, repaint_delay) =
             output
                 .viewport_output
                 .get(&ViewportId::ROOT)
-                .map_or((false, Duration::MAX), |viewport| {
-                    let close = viewport.commands.iter().any(|c| matches!(c, ViewportCommand::Close));
-                    (close, viewport.repaint_delay)
+                .map_or((false, false, Duration::MAX), |viewport| {
+                    let sent = |wanted: &ViewportCommand| {
+                        viewport
+                            .commands
+                            .iter()
+                            .any(|command| std::mem::discriminant(command) == std::mem::discriminant(wanted))
+                    };
+
+                    (
+                        sent(&ViewportCommand::Close),
+                        sent(&ViewportCommand::StartDrag),
+                        viewport.repaint_delay,
+                    )
                 });
 
         let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
@@ -343,6 +368,11 @@ impl AppWindow {
                 self.window.set_visible(true);
                 self.window.focus_window();
                 self.shown = true;
+
+                // Only now: showing the window is the last thing winit rewrites its styles for.
+                if self.frame_radius > 0 {
+                    platform::use_own_frame(&self.window, self.frame_radius);
+                }
             }
 
             buffer.present().map_err(|e| anyhow!("{e}"))?;
@@ -365,6 +395,11 @@ impl AppWindow {
             }
             delay => Instant::now().checked_add(delay),
         };
+
+        // Last, because the system takes the thread over until the user lets the window go.
+        if drag {
+            let _ = self.window.drag_window();
+        }
 
         Ok(close)
     }

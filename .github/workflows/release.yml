@@ -3,6 +3,9 @@ name: Release
 # Push a tag matching the crate version (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to build
 # the archives for every platform and attach them to a draft GitHub release.
 #
+# The release also carries the `update-*` files the app updates itself from. Installed copies only
+# see them once the draft is published, as `releases/latest` skips drafts and pre-releases.
+#
 # Run the workflow manually (Actions > Release > Run workflow) to only build the archives: they are
 # kept as artifacts of the run, and no release is created.
 on:
@@ -17,8 +20,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # A tag is no reason to skip the checks, and a release is every reason not to: nothing is built
+  # until they pass, so a tag can never turn into a release the tests would have stopped.
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: checks
     strategy:
       matrix:
         include:
@@ -71,6 +81,8 @@ jobs:
       - name: Download models
         run: cargo xtask models
 
+      # The manifests go out unsigned: the key never touches the build server, so a release is
+      # signed by hand before it is published. See RELEASE.md.
       - name: Build the archive
         run: cargo xtask dist
 
@@ -90,6 +102,15 @@ jobs:
             target/dist/*.zip
             target/dist/*.tar.gz
             target/dist/*-setup.exe
+          if-no-files-found: error
+
+      # Kept apart so that the files land next to the archives instead of in a subdirectory:
+      # an artifact's layout starts at the deepest directory all of its paths share.
+      - name: Upload the update files
+        uses: actions/upload-artifact@v7
+        with:
+          name: peekr-${{ matrix.platform }}-update
+          path: target/dist/update/*
           if-no-files-found: error
 
   release:

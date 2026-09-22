@@ -10,13 +10,7 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Name of the Windows / Super / Command key on the current platform.
-pub const SUPER_LABEL: &str = if cfg!(windows) {
-    "Win"
-} else if cfg!(target_os = "macos") {
-    "Cmd"
-} else {
-    "Super"
-};
+pub const SUPER_LABEL: &str = if cfg!(windows) { "Win" } else { "Super" };
 
 /// Keys a shortcut can end with: (name, hotkey code, egui key).
 #[rustfmt::skip]
