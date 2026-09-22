@@ -44,6 +44,12 @@ const LOADER_DELAY: Duration = Duration::from_millis(300);
 const LOADER_SIZE: (f32, f32) = (10.0, 36.0);
 /// Width of the dark outline around the loader's arc.
 const LOADER_OUTLINE: f32 = 2.0;
+/// How long the "copied" toast stays fully visible before it starts fading out.
+const COPIED_NOTICE_HOLD: Duration = Duration::from_millis(1400);
+/// How long the toast then takes to fade out.
+const COPIED_NOTICE_FADE: Duration = Duration::from_millis(400);
+/// Distance kept between the toast and the screen's bottom right corner.
+const COPIED_NOTICE_MARGIN: Vec2 = Vec2::new(16.0, 16.0);
 /// How often a pending recognition is checked for a result.
 const POLL_INTERVAL: Duration = Duration::from_millis(30);
 
@@ -106,6 +112,7 @@ pub fn capture_text(screens: &[Screenshot], recognize: Recognize<'_>, copy: Copy
                 screens: views,
                 stage: Stage::Selecting { drag: None },
                 card: None,
+                copied: None,
                 selections: 0,
                 copy_error: None,
                 repaint: vec![false; contexts.len()],
@@ -244,6 +251,8 @@ struct Overlay<'a> {
     stage: Stage,
     /// Window and area of the result card last frame, so clicks on it don't start a new selection.
     card: Option<(usize, Rect)>,
+    /// When the text was last copied with the keyboard, which leaves the overlay open.
+    copied: Option<Instant>,
     /// Counts selections, so each one gets a new card placed next to it, even when the previous
     /// card was dragged away.
     selections: u64,
@@ -259,13 +268,13 @@ impl window::App for Overlay<'_> {
         let ctx = ui.ctx().clone();
         let screen = ui.max_rect();
 
-        let (pressed, released, cursor, cancel, confirm) = ctx.input(|i| {
+        let (pressed, released, cursor, cancel, copy_shortcut) = ctx.input(|i| {
             (
                 i.pointer.primary_pressed(),
                 i.pointer.primary_released(),
                 i.pointer.interact_pos().or(i.pointer.hover_pos()),
                 i.key_pressed(Key::Escape) || i.pointer.secondary_pressed(),
-                i.key_pressed(Key::Enter) || i.events.iter().any(|e| matches!(e, Event::Copy)),
+                i.events.iter().any(|e| matches!(e, Event::Copy)),
             )
         });
 
@@ -289,6 +298,7 @@ impl window::App for Overlay<'_> {
                 drag: cursor.map(|start| (index, start)),
             });
             self.card = None;
+            self.copied = None;
             self.selections += 1;
             self.copy_error = None;
         }
@@ -330,7 +340,7 @@ impl window::App for Overlay<'_> {
         }
 
         let copy_clicked = self.show_card(index, &ctx, screen);
-        self.copy_text(&ctx, copy_clicked || confirm);
+        self.copy_text(&ctx, copy_clicked || copy_shortcut, copy_clicked);
     }
 
     fn take_repaint(&mut self, window: usize) -> bool {
@@ -392,7 +402,9 @@ impl Overlay<'_> {
     }
 
     /// Copies the recognized text and closes the overlay when the user asks for it.
-    fn copy_text(&mut self, ctx: &egui::Context, requested: bool) {
+    /// Copies the recognized text. The button also closes the overlay, while the keyboard only
+    /// copies, so that the selection stays on screen to be copied again or replaced.
+    fn copy_text(&mut self, ctx: &egui::Context, requested: bool, and_close: bool) {
         let Stage::Done { result: Ok(text), .. } = &self.stage else {
             return;
         };
@@ -401,7 +413,14 @@ impl Overlay<'_> {
         }
 
         match (self.copy)(text) {
-            Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            Ok(()) => {
+                self.copied = Some(Instant::now());
+                self.copy_error = None;
+
+                if and_close {
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+            }
             Err(e) => self.copy_error = Some(format!("Couldn't copy: {e:#}")),
         }
     }
@@ -468,8 +487,42 @@ impl Overlay<'_> {
             });
 
         self.card = Some((index, response.response.rect));
+        self.show_copied_notice(ctx, screen);
 
         copy_clicked
+    }
+
+    /// Shows a toast in the corner of the screen saying that the text was copied, fading out on
+    /// its own; like a website's toast notification, it does not block anything underneath.
+    fn show_copied_notice(&self, ctx: &egui::Context, screen: Rect) {
+        let Some(at) = self.copied else { return };
+        let total = COPIED_NOTICE_HOLD + COPIED_NOTICE_FADE;
+        let Some(remaining) = total.checked_sub(at.elapsed()) else {
+            return;
+        };
+
+        let opacity = if remaining > COPIED_NOTICE_FADE {
+            1.0
+        } else {
+            remaining.as_secs_f32() / COPIED_NOTICE_FADE.as_secs_f32()
+        };
+
+        // One wake-up is enough before the fade starts; ticking at POLL_INTERVAL animates it.
+        let next_wake = remaining.saturating_sub(COPIED_NOTICE_FADE);
+        ctx.request_repaint_after(if next_wake.is_zero() { POLL_INTERVAL } else { next_wake });
+
+        Area::new(Id::new("copied-notice"))
+            .order(Order::Foreground)
+            .fixed_pos(screen.max - COPIED_NOTICE_MARGIN)
+            .pivot(Align2::RIGHT_BOTTOM)
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.set_opacity(opacity);
+
+                theme::card(Margin::symmetric(16, 12)).show(ui, |ui| {
+                    ui.label(RichText::new("Copied to clipboard").size(13.0).color(theme::TEXT));
+                });
+            });
     }
 
     /// Converts a selection in window points into pixels of the window's screenshot.
@@ -546,7 +599,7 @@ fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
         // The row is as tall as the button from the start, so the hints are centered against it.
         ui.set_min_height(BUTTON_HEIGHT);
 
-        key_hint(ui, "Enter", "copy");
+        key_hint(ui, "Ctrl + C", "copy");
         ui.add_space(8.0);
         key_hint(ui, "Esc", "close");
 
@@ -560,7 +613,7 @@ fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
                 // Takes drags too, so they don't move the card.
                 .sense(Sense::click_and_drag());
 
-            ui.add(copy).on_hover_text("Enter or Ctrl+C").clicked()
+            ui.add(copy).clicked()
         })
         .inner
     })
@@ -571,26 +624,29 @@ fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
 fn key_hint(ui: &mut egui::Ui, key: &str, action: &str) {
     ui.spacing_mut().item_spacing.x = 6.0;
 
-    // The key cap is painted by hand, as a Frame in a row centered against the button would
-    // stretch to the height of the row.
+    pill(ui, key, theme::TEXT, theme::RAISED, theme::BORDER);
+    ui.label(RichText::new(action).size(12.0).color(theme::MUTED));
+}
+
+/// A small rounded label, painted by hand: a Frame in a row centered against the button would
+/// stretch to the height of the row.
+fn pill(ui: &mut egui::Ui, text: &str, color: Color32, fill: Color32, border: Color32) {
     let background = ui.painter().add(Shape::Noop);
 
     ui.add_space(KEY_PADDING.x);
-    let key = ui.label(RichText::new(key).size(11.0).color(theme::TEXT)).rect;
+    let label = ui.label(RichText::new(text).size(11.0).color(color)).rect;
     ui.add_space(KEY_PADDING.x);
 
     ui.painter().set(
         background,
         RectShape::new(
-            key.expand2(KEY_PADDING),
+            label.expand2(KEY_PADDING),
             CornerRadius::same(5),
-            theme::RAISED,
-            Stroke::new(1.0, theme::BORDER),
+            fill,
+            Stroke::new(1.0, border),
             StrokeKind::Inside,
         ),
     );
-
-    ui.label(RichText::new(action).size(12.0).color(theme::MUTED));
 }
 
 /// Places the card below the selection, above it when there is no room below, and inside its
@@ -710,6 +766,7 @@ mod tests {
                 result: Ok(text.to_owned()),
             },
             card: None,
+            copied: None,
             selections: 0,
             copy_error: None,
             repaint: vec![false],
@@ -779,5 +836,46 @@ on two lines";
     #[test]
     fn the_no_text_card_is_not_dragged() {
         assert_eq!(drag_card("", |card| card.min + vec2(4.0, 4.0)), Vec2::ZERO);
+    }
+
+    /// The toast is shown right after copying, fades out, and is gone once its time is up.
+    #[test]
+    fn the_copied_toast_fades_out_and_disappears() {
+        let ctx = egui::Context::default();
+        let recognize = |_| mpsc::channel().1;
+        let mut copy = |_: &str| Ok(());
+        let mut is_shown = |age: Duration| {
+            let overlay = Overlay {
+                screens: vec![],
+                stage: Stage::Selecting { drag: None },
+                card: None,
+                copied: Instant::now().checked_sub(age),
+                selections: 0,
+                copy_error: None,
+                repaint: vec![],
+                recognize: &recognize,
+                copy: &mut copy,
+            };
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+                ..RawInput::default()
+            };
+
+            let mut output = ctx.run_ui(input, |ui| overlay.show_copied_notice(ui.ctx(), ui.max_rect()));
+            let shown = !output.shapes.is_empty();
+            output.textures_delta.clear();
+
+            shown
+        };
+
+        assert!(is_shown(Duration::ZERO), "shown right after copying");
+        assert!(
+            is_shown(COPIED_NOTICE_HOLD + COPIED_NOTICE_FADE / 2),
+            "still shown while fading"
+        );
+        assert!(
+            !is_shown(COPIED_NOTICE_HOLD + COPIED_NOTICE_FADE + Duration::from_millis(1)),
+            "gone once its time is up"
+        );
     }
 }
