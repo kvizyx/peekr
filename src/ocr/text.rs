@@ -56,7 +56,7 @@ pub fn assemble_text(lines: &[TextLine]) -> String {
             row.items.sort_by(|a, b| a.1.min.x.total_cmp(&b.1.min.x));
             let words: Vec<&str> = row.items.iter().map(|(line, _)| line.text.as_str()).collect();
 
-            fix_mixed_scripts(&words.join(" "))
+            join_cjk(&fix_mixed_scripts(&words.join(" ")))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -154,6 +154,49 @@ fn fix_mixed_scripts(line: &str) -> String {
         .join(" ")
 }
 
+/// Ranges whose characters are written without spaces between them: the Chinese, Japanese and
+/// fullwidth blocks. Korean is left out, as Hangul is written with spaces between words.
+#[rustfmt::skip]
+const SPACE_LESS: &[(char, char)] = &[
+    ('\u{3000}', '\u{303F}'), // CJK symbols and punctuation
+    ('\u{3040}', '\u{30FF}'), // hiragana and katakana
+    ('\u{31F0}', '\u{31FF}'), // katakana phonetic extensions
+    ('\u{3400}', '\u{4DBF}'), // CJK ideographs, extension A
+    ('\u{4E00}', '\u{9FFF}'), // CJK ideographs
+    ('\u{F900}', '\u{FAFF}'), // CJK compatibility ideographs
+    ('\u{FF00}', '\u{FF60}'), // fullwidth forms
+    ('\u{FF61}', '\u{FF9F}'), // halfwidth katakana
+];
+
+fn is_space_less(c: char) -> bool {
+    SPACE_LESS.iter().any(|&(first, last)| (first..=last).contains(&c))
+}
+
+/// Removes the spaces between characters that are written without them. Text boxes are joined
+/// with spaces, which is right for words but wrong in Chinese and Japanese, where a line broken
+/// into several boxes has to be put back together as it was.
+fn join_cjk(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line.chars().peekable();
+
+    while let Some(c) = rest.next() {
+        if c != ' ' {
+            out.push(c);
+            continue;
+        }
+
+        let before = out.chars().next_back();
+        let after = rest.peek().copied();
+
+        // A space between a word and a character is kept: "Hello 世界" is written with one.
+        if !before.is_some_and(is_space_less) || !after.is_some_and(is_space_less) {
+            out.push(c);
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::geometry::Point;
@@ -187,6 +230,17 @@ mod tests {
         ];
 
         assert_eq!(assemble_text(&lines), "hello world\nsecond");
+    }
+
+    #[test]
+    fn assembles_chinese_rows_without_spaces() {
+        let lines = [
+            line("你好", 0.0, 0.0),
+            line("世界", 60.0, 2.0),
+            line("Peekr", 0.0, 40.0),
+        ];
+
+        assert_eq!(assemble_text(&lines), "你好世界\nPeekr");
     }
 
     #[test]
@@ -243,6 +297,21 @@ mod tests {
         let line = "Цена: 1 299,00 Р email: test@example.com";
 
         assert_eq!(fix_mixed_scripts(line), line);
+    }
+
+    #[test]
+    fn joins_chinese_and_japanese_without_spaces() {
+        assert_eq!(join_cjk("你好 世界"), "你好世界");
+        assert_eq!(join_cjk("日本語 、 テスト"), "日本語、テスト");
+        assert_eq!(join_cjk("ファイル を 開く"), "ファイルを開く");
+    }
+
+    #[test]
+    fn keeps_spaces_around_words() {
+        assert_eq!(join_cjk("Hello 世界"), "Hello 世界");
+        assert_eq!(join_cjk("世界 Hello"), "世界 Hello");
+        assert_eq!(join_cjk("Save 변경 사항"), "Save 변경 사항");
+        assert_eq!(join_cjk("Open file"), "Open file");
     }
 
     #[test]
