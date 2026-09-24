@@ -17,6 +17,24 @@ Peekr is an offline cross-platform OCR desktop application that can extract text
 
 ![Preview](assets/preview.gif)
 
+## Installation
+
+Download the latest release for your platform from the [Releases](https://github.com/kvizyx/peekr/releases/latest) page.
+
+**Windows**
+
+- `peekr-windows-x86_64-Setup.exe` - Installs and keeps it updated automatically.
+- `peekr-windows-x86_64-Portable.zip` - No installation, but does not update itself.
+
+**Linux**
+
+- `peekr-<platform>.AppImage` (`linux-x86_64` or `linux-aarch64`) - Updates itself, but needs `libfuse2`.
+  ```bash
+  chmod +x peekr-linux-x86_64.AppImage
+  ./peekr-linux-x86_64.AppImage
+  ```
+- `peekr-<version>-<platform>.tar.gz` - A plain archive with the same files; does not update itself.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
