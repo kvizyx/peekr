@@ -1,10 +1,10 @@
-<h1 style="text-align: center;">Peekr</h1>
+<h1 align="center">Peekr</h1>
 
-<p style="text-align: center;">
+<p align="center">
   <img src="assets/icon.svg" width="160" alt="Peekr icon: a hand-drawn magnifying glass">
 </p>
 
-<p style="text-align: center;">
+<p align="center">
   <a href="https://github.com/kvizyx/peekr/releases/latest"><img src="https://img.shields.io/github/v/release/kvizyx/peekr?label=Release" alt="Latest release"></a>
   <a href="https://github.com/kvizyx/peekr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kvizyx/peekr/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/kvizyx/peekr?label=License" alt="License"></a>
@@ -23,17 +23,19 @@ Download the latest release for your platform from the [Releases](https://github
 
 **Windows**
 
-- `peekr-windows-x86_64-Setup.exe` - Installs and keeps it updated automatically.
-- `peekr-windows-x86_64-Portable.zip` - No installation, but does not update itself.
+- `peekr-windows-x86_64-Setup.exe`
+- `peekr-windows-x86_64-Portable.zip`
 
 **Linux**
 
-- `peekr-<platform>.AppImage` (`linux-x86_64` or `linux-aarch64`) - Updates itself, but needs `libfuse2`.
+- `peekr-<platform>.AppImage` (`linux-x86_64` or `linux-aarch64`, needs `libfuse2`)
+
   ```bash
   chmod +x peekr-linux-x86_64.AppImage
   ./peekr-linux-x86_64.AppImage
   ```
-- `peekr-<version>-<platform>.tar.gz` - A plain archive with the same files; does not update itself.
+
+- `peekr-<version>-<platform>.tar.gz`
 
 ## License
 
