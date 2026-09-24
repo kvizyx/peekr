@@ -2,16 +2,12 @@ use std::ptr::null_mut;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, FALSE, GetLastError, HANDLE, HWND, POINT, TRUE,
+    CloseHandle, ERROR_ALREADY_EXISTS, FALSE, GetLastError, HANDLE, HWND, POINT, TRUE,
 };
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
 use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
-use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW,
-};
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, GetCurrentThreadId};
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -76,119 +72,6 @@ pub fn single_instance() -> Option<InstanceLock> {
     // A failed CreateMutexW leaves a null handle: the app runs on, it just cannot tell whether
     // it is alone.
     Some(InstanceLock(mutex))
-}
-
-/// Where the installer records this app for "Apps & features", and where winget reads the
-/// installed version from. The Inno Setup `AppId`, as in `xtask/installer/peekr.iss`.
-const UNINSTALL_KEY: &str =
-    r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F3B0E4A-2C55-4F35-9C0C-6C8F63A0F3D1}_is1";
-
-/// Tells the system that the installation in `dir` is at `version` now.
-///
-/// The app replaces its own files, which leaves what the installer wrote about it untouched:
-/// "Apps & features" would go on showing the version that was installed, and winget, which reads
-/// the same value, would go on offering an upgrade to a version already in place — or install an
-/// older one over a newer one.
-///
-/// Only the copy the entry describes may correct it. A missing entry means this copy was unpacked
-/// rather than installed, and one that points elsewhere belongs to an installation of its own,
-/// which a portable copy running beside it has no business renaming.
-pub fn record_installed_version(dir: &std::path::Path, version: &str) {
-    let path = wide(UNINSTALL_KEY);
-    let mut key: HKEY = null_mut();
-
-    // SAFETY: the path is a valid null-terminated wide string, and `key` is only written on success.
-    let opened = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            path.as_ptr(),
-            0,
-            KEY_QUERY_VALUE | KEY_SET_VALUE,
-            &raw mut key,
-        )
-    };
-    if opened != ERROR_SUCCESS {
-        return;
-    }
-
-    if registry_string(key, "InstallLocation").is_some_and(|installed| is_same_dir(&installed, dir)) {
-        set_registry_string(key, "DisplayVersion", version);
-        // Inno writes the name with the version in it, so it has to follow along.
-        set_registry_string(key, "DisplayName", &format!("Peekr {version}"));
-    }
-
-    // SAFETY: the key comes from RegOpenKeyExW and is closed exactly once.
-    unsafe { RegCloseKey(key) };
-}
-
-/// Whether a path the installer recorded, which ends in a separator, names `dir`.
-fn is_same_dir(recorded: &str, dir: &std::path::Path) -> bool {
-    let recorded = std::path::Path::new(recorded.trim_end_matches(std::path::is_separator));
-
-    match (recorded.canonicalize(), dir.canonicalize()) {
-        (Ok(recorded), Ok(dir)) => recorded == dir,
-        // An installation that is no longer there is not this one.
-        _ => false,
-    }
-}
-
-fn registry_string(key: HKEY, name: &str) -> Option<String> {
-    let name = wide(name);
-    let mut kind = 0;
-    let mut bytes = 0;
-
-    // SAFETY: the name is null-terminated; a null buffer asks for the size, written to `bytes`.
-    let sized = unsafe {
-        RegQueryValueExW(
-            key,
-            name.as_ptr(),
-            null_mut(),
-            &raw mut kind,
-            null_mut(),
-            &raw mut bytes,
-        )
-    };
-    if sized != ERROR_SUCCESS || kind != REG_SZ || bytes == 0 {
-        return None;
-    }
-
-    // One unit of slack: a value stored without its terminator still has room for one.
-    let mut buffer = vec![0u16; bytes as usize / size_of::<u16>() + 1];
-    let mut bytes = size_of_val(buffer.as_slice()) as u32;
-
-    // SAFETY: the buffer holds `bytes` writable bytes, which is what RegQueryValueExW is told.
-    let read = unsafe {
-        RegQueryValueExW(
-            key,
-            name.as_ptr(),
-            null_mut(),
-            &raw mut kind,
-            buffer.as_mut_ptr().cast(),
-            &raw mut bytes,
-        )
-    };
-    if read != ERROR_SUCCESS {
-        return None;
-    }
-
-    buffer.truncate(bytes as usize / size_of::<u16>());
-    let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
-
-    Some(String::from_utf16_lossy(&buffer[..end]))
-}
-
-fn set_registry_string(key: HKEY, name: &str, value: &str) {
-    let wide_name = wide(name);
-    let value = wide(value);
-    let bytes = size_of_val(value.as_slice()) as u32;
-
-    // SAFETY: both strings are null-terminated and outlive the call, and `bytes` is the length of
-    // `value` in bytes, including its terminator, which is what REG_SZ expects.
-    let set = unsafe { RegSetValueExW(key, wide_name.as_ptr(), 0, REG_SZ, value.as_ptr().cast(), bytes) };
-
-    if set != ERROR_SUCCESS {
-        log::warn!("cannot record {name} in the registry: error {set}");
-    }
 }
 
 /// A null-terminated UTF-16 string, the only kind the `W` functions take.

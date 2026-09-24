@@ -63,10 +63,6 @@ pub fn single_instance() -> Option<InstanceLock> {
     (!taken).then_some(InstanceLock(None))
 }
 
-/// Nothing on Linux records an installed version for an app that unpacks into a directory of
-/// its own; distribution packages are not the app's to update, and are skipped anyway.
-pub fn record_installed_version(_dir: &std::path::Path, _version: &str) {}
-
 /// Neither X11 nor Wayland lets an opaque window be given a shape of its own, so a window that
 /// draws its own frame keeps its corners square here.
 pub fn use_own_frame(_window: &winit::window::Window, _radius: u32) {}

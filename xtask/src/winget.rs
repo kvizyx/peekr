@@ -17,8 +17,11 @@ const PUBLISHER: &str = "kvizyx";
 const REPOSITORY: &str = "https://github.com/kvizyx/peekr";
 /// Schema the manifests are written against; `winget validate` accepts this one.
 const MANIFEST_VERSION: &str = "1.6.0";
-/// Inno Setup registers itself under this key, which lets winget see installed versions.
-const PRODUCT_CODE: &str = "{6F3B0E4A-2C55-4F35-9C0C-6C8F63A0F3D1}_is1";
+/// Velopack registers the app for "Apps & features" under its package id, and keeps the version
+/// there current as it updates, which is what lets winget see what is installed.
+const PRODUCT_CODE: &str = "peekr";
+/// What `cargo xtask dist` names the Windows installer; the same in every release.
+const INSTALLER: &str = "peekr-windows-x86_64-Setup.exe";
 
 pub fn manifests(root: &Path, version: Option<&str>) -> Result<()> {
     let version = match version {
@@ -26,9 +29,8 @@ pub fn manifests(root: &Path, version: Option<&str>) -> Result<()> {
         None => crate::dist::package_version(root)?,
     };
 
-    let installer = format!("peekr-{version}-windows-x86_64-setup.exe");
-    let url = format!("{REPOSITORY}/releases/download/v{version}/{installer}");
-    let sha256 = installer_sha256(root, &installer, &url)?.to_uppercase();
+    let url = format!("{REPOSITORY}/releases/download/v{version}/{INSTALLER}");
+    let sha256 = installer_sha256(root, &version, &url)?.to_uppercase();
 
     let dir = crate::target_dir(root)
         .join("winget/manifests/k")
@@ -60,10 +62,10 @@ fn write(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Hashes the installer built locally, or the published one when it is not around.
-fn installer_sha256(root: &Path, installer: &str, url: &str) -> Result<String> {
-    let local = crate::target_dir(root).join("dist").join(installer);
-    if local.is_file() {
+/// Hashes the installer built locally, when it is of this version, or the published one.
+fn installer_sha256(root: &Path, version: &str, url: &str) -> Result<String> {
+    let local = crate::target_dir(root).join("dist/release").join(INSTALLER);
+    if local.is_file() && crate::dist::package_version(root)? == version {
         eprintln!("hashing {}", local.display());
         return hash::sha256_of_file(&local);
     }
@@ -95,12 +97,13 @@ fn installer_manifest(version: &str, url: &str, sha256: &str) -> String {
 PackageIdentifier: {IDENTIFIER}
 PackageVersion: {version}
 MinimumOSVersion: 10.0.0.0
-InstallerType: inno
+InstallerType: exe
 Scope: user
 InstallModes:
-- interactive
 - silent
-- silentWithProgress
+InstallerSwitches:
+  Silent: --silent
+  SilentWithProgress: --silent
 UpgradeBehavior: install
 ProductCode: '{PRODUCT_CODE}'
 ReleaseNotesUrl: {REPOSITORY}/releases/tag/v{version}

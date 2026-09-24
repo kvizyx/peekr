@@ -13,14 +13,10 @@ const PNG_SIZE: u32 = 32;
 const ICO_SIZES: [u32; 5] = [16, 32, 48, 128, 256];
 
 pub fn render(root: &Path) -> Result<()> {
-    let source = root.join("assets/icon.svg");
-    let data = std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?;
-    let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).context("parsing the icon SVG")?;
+    let tree = load(root)?;
 
     let png = root.join(format!("assets/icon-{PNG_SIZE}.png"));
-    draw(&tree, PNG_SIZE)?
-        .save_png(&png)
-        .with_context(|| format!("writing {}", png.display()))?;
+    save_png(&tree, PNG_SIZE, &png)?;
     eprintln!("rendered {} ({PNG_SIZE}x{PNG_SIZE})", png.display());
 
     let ico = root.join("assets/icon.ico");
@@ -28,6 +24,24 @@ pub fn render(root: &Path) -> Result<()> {
     eprintln!("rendered {} ({ICO_SIZES:?})", ico.display());
 
     Ok(())
+}
+
+/// Renders the icon into a PNG of `size` pixels square.
+pub fn png(root: &Path, size: u32, output: &Path) -> Result<()> {
+    save_png(&load(root)?, size, output)
+}
+
+fn load(root: &Path) -> Result<usvg::Tree> {
+    let source = root.join("assets/icon.svg");
+    let data = std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?;
+
+    usvg::Tree::from_data(&data, &usvg::Options::default()).context("parsing the icon SVG")
+}
+
+fn save_png(tree: &usvg::Tree, size: u32, output: &Path) -> Result<()> {
+    draw(tree, size)?
+        .save_png(output)
+        .with_context(|| format!("writing {}", output.display()))
 }
 
 fn draw(tree: &usvg::Tree, size: u32) -> Result<tiny_skia::Pixmap> {

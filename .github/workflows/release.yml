@@ -1,13 +1,13 @@
 name: Release
 
 # Push a tag matching the crate version (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to build
-# the archives for every platform and attach them to a draft GitHub release.
+# the release for every platform with Velopack and attach it to a draft GitHub release.
 #
-# The release also carries the `update-*` files the app updates itself from. Installed copies only
-# see them once the draft is published, as `releases/latest` skips drafts and pre-releases.
+# The release also carries Velopack's packages and feeds, which installed copies update from. They
+# only see them once the draft is published, as `releases/latest` skips drafts and pre-releases.
 #
-# Run the workflow manually (Actions > Release > Run workflow) to only build the archives: they are
-# kept as artifacts of the run, and no release is created.
+# Run the workflow manually (Actions > Release > Run workflow) to only build: the files are kept
+# as artifacts of the run, and no release is created.
 on:
   push:
     tags: ["v*"]
@@ -81,36 +81,28 @@ jobs:
       - name: Download models
         run: cargo xtask models
 
-      # The manifests go out unsigned: the key never touches the build server, so a release is
-      # signed by hand before it is published. See RELEASE.md.
-      - name: Build the archive
-        run: cargo xtask dist
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
 
-      - name: Build the Windows installer
-        if: runner.os == 'Windows'
-        shell: pwsh
+      # The same version as the velopack crate the app is built with, which is what Velopack
+      # expects: the packages vpk makes are read by that crate.
+      - name: Install vpk
+        shell: bash
         run: |
-          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
-            choco install innosetup --no-progress -y
-          }
-          cargo xtask installer
+          version=$(tr -d '\r' < Cargo.lock | grep -A1 '^name = "velopack"$' | sed -n 's/^version = "\(.*\)"$/\1/p')
+          dotnet tool install --global vpk --version "$version"
+
+      - name: Build the release
+        env:
+          # For fetching the latest release to make the delta from, without the anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo xtask dist
 
       - uses: actions/upload-artifact@v7
         with:
           name: peekr-${{ matrix.platform }}
-          path: |
-            target/dist/*.zip
-            target/dist/*.tar.gz
-            target/dist/*-setup.exe
-          if-no-files-found: error
-
-      # Kept apart so that the files land next to the archives instead of in a subdirectory:
-      # an artifact's layout starts at the deepest directory all of its paths share.
-      - name: Upload the update files
-        uses: actions/upload-artifact@v7
-        with:
-          name: peekr-${{ matrix.platform }}-update
-          path: target/dist/update/*
+          path: target/dist/release/*
           if-no-files-found: error
 
   release:

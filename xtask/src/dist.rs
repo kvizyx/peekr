@@ -1,16 +1,22 @@
-//! `cargo xtask dist`: builds a release archive for the current platform.
+//! `cargo xtask dist`: builds a release of peekr for this platform into `target/dist/release/`,
+//! which is what goes up on the GitHub release.
 //!
-//! The archive `target/dist/peekr-<version>-<os>-<arch>` (.zip on Windows, .tar.gz elsewhere)
-//! contains a directory of the same name with the executable, the models, docs and license
-//! files. The app finds `models/` next to its executable, so it runs right after unpacking.
+//! Velopack's `vpk` packs it into an installation that updates itself:
 //!
-//! `target/dist/update/` holds the same files once more, gzip-compressed one by one, next to a
-//! manifest of what they are. The app's updater downloads only the ones that differ from the
-//! files it already has; see `src/update.rs`.
+//! - on Windows, `Setup.exe` and a portable zip;
+//! - on Linux, an `AppImage`;
+//! - everywhere, the full package of the release, a delta from the latest release when there is
+//!   one, and the feed (`releases.<channel>.json`) that installed copies look for updates in.
+//!
+//! Linux also gets `peekr-<version>-<platform>.tar.gz`, for systems that cannot run an `AppImage`.
+//! It holds the files and nothing else, and does not update itself.
+//!
+//! The channel is the platform, as `linux-aarch64`. Velopack puts the channel into the name of
+//! everything it makes, so the builds for every platform can share one release.
 
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
@@ -18,19 +24,19 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Context, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use serde::Serialize;
-use zip::write::SimpleFileOptions;
-
-use crate::{hash, process};
 
 const PACKAGE: &str = "peekr";
+const TITLE: &str = "Peekr";
+const AUTHORS: &str = "kvizyx";
+/// Where the Windows installer puts shortcuts. The Startup folder among them, since a tray app
+/// that is not running cannot be called up with its hotkey.
+const SHORTCUTS: &str = "StartMenuRoot,Startup";
+/// Size of the icon an `AppImage` shows in menus and file managers.
+const LINUX_ICON_SIZE: u32 = 256;
 /// Project files copied into the root of the archive.
 const DOCS: &[&str] = &["README.md", "LICENSE"];
 /// License files that are not generated, relative to the project root.
 const ONNXRUNTIME_LICENSE: &str = "xtask/licenses/onnxruntime-LICENSE.txt";
-/// Everything the updater uses is named with this prefix, so that the release page keeps it
-/// apart from the archives people download by hand.
-const UPDATE_PREFIX: &str = "update";
 
 /// A file to pack: where it comes from and where it goes inside the archive.
 struct Entry {
@@ -39,64 +45,40 @@ struct Entry {
     executable: bool,
 }
 
-/// What a release consists of, read by the app's updater. Mirrors `Manifest` in `src/update.rs`.
-#[derive(Debug, PartialEq, Eq, Serialize)]
-struct Manifest {
-    version: String,
-    files: Vec<ManifestFile>,
-}
-
-#[derive(Debug, PartialEq, Eq, Serialize)]
-struct ManifestFile {
-    path: String,
-    sha256: String,
-    /// Of the compressed download, which is what the app's progress bar measures.
-    size: u64,
-    executable: bool,
-    url: String,
-}
-
 pub fn package(root: &Path) -> Result<()> {
     let build = build(root)?;
-    write_update_files(root, &build)?;
+    let stage_dir = build.stage()?;
 
-    let archive = if cfg!(windows) {
-        let archive = build.dist_dir.join(format!("{}.zip", build.prefix));
-        write_zip(&archive, &build.prefix, &build.entries)?;
-        archive
-    } else {
-        let archive = build.dist_dir.join(format!("{}.tar.gz", build.prefix));
+    let release_dir = build.dist_dir.join("release");
+    recreate(&release_dir)?;
+
+    velopack(root, &build, &stage_dir, &release_dir)?;
+
+    if !cfg!(windows) {
+        let archive = release_dir.join(format!("{}.tar.gz", build.prefix));
         write_tar_gz(&archive, &build.prefix, &build.entries)?;
-        archive
-    };
+        eprintln!("packed {} files into {}", build.entries.len(), archive.display());
+    }
 
-    let size = fs::metadata(&archive)?.len() as f64 / f64::from(1 << 20);
-    eprintln!(
-        "packed {} files into {} ({size:.1} MB)",
-        build.entries.len(),
-        archive.display()
-    );
-
+    eprintln!("the release is in {}", release_dir.display());
     Ok(())
 }
 
 /// A release build, with everything that goes into a package.
-pub struct Build {
-    pub version: String,
+struct Build {
+    version: String,
     /// The operating system and architecture the build is for, as `windows-x86_64`.
     platform: String,
-    pub prefix: String,
-    pub dist_dir: PathBuf,
+    prefix: String,
+    dist_dir: PathBuf,
     entries: Vec<Entry>,
 }
 
 impl Build {
     /// Copies the files into `target/dist/<prefix>/`, the layout they are installed in.
-    pub fn stage(&self) -> Result<PathBuf> {
+    fn stage(&self) -> Result<PathBuf> {
         let stage_dir = self.dist_dir.join(&self.prefix);
-        if stage_dir.exists() {
-            fs::remove_dir_all(&stage_dir).with_context(|| format!("clearing {}", stage_dir.display()))?;
-        }
+        recreate(&stage_dir)?;
 
         for entry in &self.entries {
             let destination = stage_dir.join(&entry.name);
@@ -113,7 +95,7 @@ impl Build {
     }
 }
 
-pub fn build(root: &Path) -> Result<Build> {
+fn build(root: &Path) -> Result<Build> {
     let version = package_version(root)?;
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let prefix = format!("{PACKAGE}-{version}-{platform}");
@@ -123,18 +105,14 @@ pub fn build(root: &Path) -> Result<Build> {
     fs::create_dir_all(&dist_dir)?;
 
     eprintln!("building {PACKAGE} {version} in release mode");
-    process::run(
-        cargo()
-            .args(["build", "--release", "--locked", "--package", PACKAGE])
-            .current_dir(root),
-    )?;
+    run(cargo()
+        .args(["build", "--release", "--locked", "--package", PACKAGE])
+        .current_dir(root))?;
 
     let third_party_licenses = dist_dir.join("THIRD-PARTY-LICENSES.html");
     generate_third_party_licenses(root, &third_party_licenses)?;
 
-    let binary = target_dir
-        .join("release")
-        .join(format!("{PACKAGE}{}", std::env::consts::EXE_SUFFIX));
+    let binary = target_dir.join("release").join(executable());
     let entries = collect_entries(root, binary, third_party_licenses)?;
 
     Ok(Build {
@@ -146,8 +124,132 @@ pub fn build(root: &Path) -> Result<Build> {
     })
 }
 
+/// Packs the staged files with `vpk`, and copies what goes on the release into `release_dir`.
+fn velopack(root: &Path, build: &Build, stage_dir: &Path, release_dir: &Path) -> Result<()> {
+    let channel = build.platform.as_str();
+    let work_dir = build.dist_dir.join("velopack");
+    recreate(&work_dir)?;
+
+    // A delta is made from the full package of the latest release, which has to be here for
+    // that. The first release has none to make one from.
+    let repository = package_field(root, "repository")?;
+    let mut download = vpk();
+    download
+        .args(["download", "github", "--repoUrl", &repository, "--channel", channel])
+        .arg("--outputDir")
+        .arg(&work_dir);
+    if let Some(token) = std::env::var_os("GITHUB_TOKEN") {
+        download.arg("--token").arg(token);
+    }
+    if let Err(e) = run(&mut download) {
+        eprintln!("no delta: {e:#}");
+    }
+
+    let icon = if cfg!(windows) {
+        root.join("assets/icon.ico")
+    } else {
+        let icon = build.dist_dir.join("icon.png");
+        crate::icon::png(root, LINUX_ICON_SIZE, &icon)?;
+        icon
+    };
+
+    let mut pack = vpk();
+    pack.args([
+        "pack",
+        "--packId",
+        PACKAGE,
+        "--packVersion",
+        &build.version,
+        "--packTitle",
+        TITLE,
+        "--packAuthors",
+        AUTHORS,
+        "--mainExe",
+        &executable(),
+        "--channel",
+        channel,
+        "--runtime",
+        &runtime(),
+    ])
+    .arg("--packDir")
+    .arg(stage_dir)
+    .arg("--icon")
+    .arg(&icon)
+    .arg("--outputDir")
+    .arg(&work_dir);
+    if cfg!(windows) {
+        pack.args(["--shortcuts", SHORTCUTS]);
+    }
+    run(&mut pack).context("vpk is required: dotnet tool install -g vpk")?;
+
+    for entry in fs::read_dir(&work_dir)? {
+        let path = entry?.path();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+
+        if is_published(name, &build.version) {
+            fs::copy(&path, release_dir.join(name)).with_context(|| format!("copying {}", path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Whether a file `vpk` made goes on the release. Left out are the full package of the release
+/// before, which is only there to make the delta from, and the lists `vpk upload` works from,
+/// which nothing installed reads.
+fn is_published(name: &str, version: &str) -> bool {
+    if Path::new(name)
+        .extension()
+        .is_some_and(|extension| extension == "nupkg")
+    {
+        return name.starts_with(&format!("{PACKAGE}-{version}-"));
+    }
+
+    !(name.starts_with("assets.") || name.starts_with("RELEASES"))
+}
+
+/// Runs a command, failing with what it was and how it failed if it does not succeed.
+fn run(command: &mut Command) -> Result<()> {
+    let status = command.status().with_context(|| format!("starting {command:?}"))?;
+
+    if !status.success() {
+        bail!("{command:?} failed with {status}");
+    }
+
+    Ok(())
+}
+
+fn vpk() -> Command {
+    Command::new(std::env::var_os("VPK").unwrap_or_else(|| OsString::from("vpk")))
+}
+
 fn cargo() -> Command {
     Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
+}
+
+fn executable() -> String {
+    format!("{PACKAGE}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The .NET runtime identifier `vpk` knows this platform by, as `linux-arm64`.
+fn runtime() -> String {
+    let os = if cfg!(windows) { "win" } else { std::env::consts::OS };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+
+    format!("{os}-{arch}")
+}
+
+/// Empties a directory, making it if it is not there.
+fn recreate(dir: &Path) -> Result<()> {
+    if dir.exists() {
+        fs::remove_dir_all(dir).with_context(|| format!("clearing {}", dir.display()))?;
+    }
+
+    Ok(fs::create_dir_all(dir)?)
 }
 
 /// Reads `version` from the `[package]` section of the project's `Cargo.toml`.
@@ -172,61 +274,6 @@ fn package_field(root: &Path, field: &str) -> Result<String> {
         .with_context(|| format!("no {field} in the [package] section of Cargo.toml"))
 }
 
-/// Writes what the updater needs into `target/dist/update/`: every file of the release on its
-/// own, gzip-compressed, and a manifest saying where each one goes and what it hashes to.
-///
-/// The file names are the names they are uploaded to the GitHub release under, which is what
-/// makes the URLs in the manifest predictable.
-fn write_update_files(root: &Path, build: &Build) -> Result<()> {
-    let repository = package_field(root, "repository")?;
-    let platform = &build.platform;
-
-    let update_dir = build.dist_dir.join(UPDATE_PREFIX);
-    fs::create_dir_all(&update_dir)?;
-
-    let mut files = Vec::with_capacity(build.entries.len());
-
-    for entry in &build.entries {
-        // The name has to be unique across the whole release, where every platform's files meet.
-        let asset = format!("{UPDATE_PREFIX}-{platform}-{}.gz", entry.name.replace('/', "-"));
-        let compressed = update_dir.join(&asset);
-        let sha256 = compress(&entry.source, &compressed)?;
-
-        files.push(ManifestFile {
-            path: entry.name.clone(),
-            sha256,
-            size: fs::metadata(&compressed)?.len(),
-            executable: entry.executable,
-            url: format!("{repository}/releases/download/v{}/{asset}", build.version),
-        });
-    }
-
-    let manifest = Manifest {
-        version: build.version.clone(),
-        files,
-    };
-
-    let path = update_dir.join(format!("{UPDATE_PREFIX}-{platform}.toml"));
-    fs::write(&path, toml::to_string(&manifest)?)?;
-    crate::signing::sign(&path)?;
-
-    eprintln!("wrote {} update files and {}", manifest.files.len(), path.display());
-
-    Ok(())
-}
-
-/// Gzip-compresses a file, returning the SHA-256 of its contents. The updater checks the file it
-/// unpacks, not the download, so that a re-compression can never look like a corrupted release.
-fn compress(source: &Path, destination: &Path) -> Result<String> {
-    let input = File::open(source).with_context(|| format!("opening {}", source.display()))?;
-    let mut output = GzEncoder::new(BufWriter::new(File::create(destination)?), Compression::best());
-
-    let (_, sha256) = hash::copy_and_hash(input, &mut output)?;
-    output.finish()?.flush()?;
-
-    Ok(sha256)
-}
-
 fn generate_third_party_licenses(root: &Path, output: &Path) -> Result<()> {
     eprintln!("collecting third-party licenses");
 
@@ -241,13 +288,13 @@ fn generate_third_party_licenses(root: &Path, output: &Path) -> Result<()> {
         .arg(output)
         .arg(licenses_dir.join("about.hbs"));
 
-    process::run(&mut command).context("cargo-about is required: cargo install cargo-about --features cli")
+    run(&mut command).context("cargo-about is required: cargo install cargo-about --features cli")
 }
 
 fn collect_entries(root: &Path, binary: PathBuf, third_party_licenses: PathBuf) -> Result<Vec<Entry>> {
     let mut entries = vec![Entry {
         source: binary,
-        name: format!("{PACKAGE}{}", std::env::consts::EXE_SUFFIX),
+        name: executable(),
         executable: true,
     }];
 
@@ -328,21 +375,6 @@ fn sorted_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn write_zip(archive: &Path, prefix: &str, entries: &[Entry]) -> Result<()> {
-    let mut zip = zip::ZipWriter::new(BufWriter::new(File::create(archive)?));
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .compression_level(Some(9));
-
-    for entry in entries {
-        zip.start_file(format!("{prefix}/{}", entry.name), options)?;
-        io::copy(&mut File::open(&entry.source)?, &mut zip)?;
-    }
-
-    zip.finish()?;
-    Ok(())
-}
-
 fn write_tar_gz(archive: &Path, prefix: &str, entries: &[Entry]) -> Result<()> {
     let encoder = GzEncoder::new(BufWriter::new(File::create(archive)?), Compression::best());
     let mut tar = tar::Builder::new(encoder);
@@ -367,4 +399,43 @@ fn write_tar_gz(archive: &Path, prefix: &str, entries: &[Entry]) -> Result<()> {
 
     tar.into_inner()?.finish()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_release_carries_its_own_packages_and_what_installed_copies_read() {
+        let published = |name| is_published(name, "0.4.1");
+
+        for name in [
+            "peekr-0.4.1-linux-x86_64-full.nupkg",
+            "peekr-0.4.1-linux-x86_64-delta.nupkg",
+            "releases.linux-x86_64.json",
+            "peekr-linux-x86_64.AppImage",
+            "peekr-windows-x86_64-Setup.exe",
+            "peekr-windows-x86_64-Portable.zip",
+        ] {
+            assert!(published(name), "{name} goes on the release");
+        }
+
+        for name in [
+            "peekr-0.4.0-linux-x86_64-full.nupkg",
+            "assets.linux-x86_64.json",
+            "RELEASES-linux-x86_64",
+        ] {
+            assert!(!published(name), "{name} stays behind");
+        }
+    }
+
+    #[test]
+    fn the_runtime_is_named_the_way_dotnet_names_it() {
+        let runtime = runtime();
+
+        assert!(
+            ["win-x64", "linux-x64", "linux-arm64"].contains(&runtime.as_str()),
+            "{runtime} is not one vpk knows"
+        );
+    }
 }

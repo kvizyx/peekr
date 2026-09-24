@@ -73,8 +73,7 @@ jobs:
     name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
-      # Windows too: replacing the executable of a running process, which the updater is built
-      # around, only behaves the way it does there.
+      # Windows too: half of the platform code only compiles, and is only tested, there.
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}

@@ -1,29 +1,18 @@
 # Release
 
-The application updates itself. When it starts, it reads the manifest of the newest release, downloads only
-the files whose SHA-256 differs from the ones it has, and restarts into the new version. It
-installs a release only if the manifest carries a signature made with a key the app was built to
-accept.
+Peekr is installed and updated by [Velopack](https://velopack.io). When the tray app starts, it
+reads the Velopack feed of the newest published release. If there is a newer version, it downloads
+it (a delta when it is one version behind, the full package otherwise) and restarts into it.
 
-That makes the signing key the single most important thing in this document, so losing it or letting it slip away will cause problems.
+What a release carries, for each platform (`windows-x86_64`, `linux-x86_64`, `linux-aarch64`):
 
-The key is never given to the build server. GitHub Actions builds the release - you sign it on your
-own machine and then publish it.
+- `releases.<platform>.json`: the feed installed copies read;
+- `peekr-<version>-<platform>-full.nupkg`, and `-delta.nupkg` when there was a release before;
+- for people: `peekr-windows-x86_64-Setup.exe` and `-Portable.zip` on Windows, and on Linux
+  `peekr-<platform>.AppImage` and `peekr-<version>-<platform>.tar.gz`.
 
-## Making the key (one-time)
-
-```bash
-# Optional, but recommended (the key file is encrypted with this).
-export PEEKR_SIGNING_KEY_PASSWORD='...'
-
-cargo xtask keygen ~/.peekr/signing.key
-```
-
-The command prints the public half to standard output. Put it in `PUBLIC_KEYS` in
-[`src/update/mod.rs`](src/update/mod.rs). Back up `~/.peekr/signing.key` somewhere that is not
-this machine.
-
-`keygen` refuses to overwrite an existing key file.
+The `.tar.gz` is for systems that cannot run an AppImage. It does not update itself, and neither
+does a development build.
 
 ## Per-release
 
@@ -38,56 +27,43 @@ git tag vX.Y.Z
 git push origin main vX.Y.Z
 ```
 
-The workflow runs the same checks as CI — formatting, clippy and the tests — and builds nothing
-until they pass, so a tag cannot turn into a release the tests would have stopped. It then builds
-Windows, Linux x86-64 and Linux aarch64 and opens a draft release with the archives, the
-Windows installer and the `update-*` files.
+The workflow runs the same checks as CI (formatting, clippy and the tests) and builds nothing
+until they pass. It then builds every platform with `cargo xtask dist` and opens a **draft**
+release with the files above.
 
-Nothing reaches users yet: `releases/latest`, which the updater follows, skips drafts.
+The delta is made from the latest *published* release, which `vpk` downloads during the build.
+Publish one release before building the next: otherwise the delta is made from the one before, and
+copies of the unpublished release download the whole package.
 
-### 3. Sign and check
+### 3. Publish
+
+Look the draft over, and publish it. Nothing reaches users before that, since `releases/latest`,
+which the app follows, skips drafts. The next time an installed copy starts, it finds the release.
+
+### 4. Update winget, if the package is listed there
 
 ```bash
-export PEEKR_SIGNING_KEY=~/.peekr/signing.key
-export PEEKR_SIGNING_KEY_PASSWORD='...'   # Only if the key file has one
-
-cargo xtask release vX.Y.Z
+cargo xtask winget X.Y.Z
+wingetcreate submit --token <github token> target/winget/manifests/k/kvizyx/Peekr/X.Y.Z
 ```
 
-This downloads each platform's manifest, signs it, checks every signature against `PUBLIC_KEYS`,
-and uploads the `.sig` files. It then confirms the draft actually has, for each of
-`windows-x86_64`, `linux-x86_64` and `linux-aarch64`: the manifest, its signature, the
-`update-<platform>-*.gz` payload files, and the archive (plus the Windows installer). It fails
-loudly and names what is missing, instead of leaving a draft partly signed.
+Velopack keeps the version in "Apps & features" current as it updates, so `winget list` tells the
+truth in between.
 
-**A published release without its `.sig` files stops updates for everyone.** The app refuses what
-it cannot verify, and it says so only in its log — this step exists so that is caught here instead.
+## Building locally
 
-### 4. Publish
+`cargo xtask dist` needs the models (`cargo xtask models`), `cargo-about`
+(`cargo install cargo-about --features cli`), and `vpk`, which needs the .NET 8 SDK:
 
-Publishing the draft! The next time an installed copy starts, it
-finds it.
+```bash
+dotnet tool install -g vpk --version <the velopack version in Cargo.lock>
+```
 
-## Retiring a key
-
-A copy of peekr accepts the keys that were in `PUBLIC_KEYS` when it was built, and nothing else.
-A new key therefore has to arrive in a release signed with the old one:
-
-1. Make the new key. **Add** it to `PUBLIC_KEYS`, leaving the old one first.
-2. Release, signing with the **old** key. Copies out there accept it and learn the new key.
-3. Wait for that release to reach people.
-4. Release again, signing with the **new** key.
-5. Once nothing worth supporting is still on an older version, drop the old key from the list.
-
-Skipping step 2 strands every copy that has not updated yet. Losing the old key before step 4
-leaves no way to do this at all.
+The result lands in `target/dist/release/`.
 
 ## What not to do
 
-- Do not publish a release whose `.sig` files are missing.
-- Do not replace or re-upload assets of a release that is already published. Someone may be part
-  way through downloading them, and a download that resumes into a file whose contents changed
-  fails its checksum.
-- Do not replace a key in `PUBLIC_KEYS`; add to the list and retire as above.
-- Do not put the signing key on the build server. The signature is worth having because the key
-  is somewhere a compromise of this repository cannot reach.
+- Do not replace or re-upload assets of a release that is already published. Installed copies
+  check every package against the SHA-256 in the feed, and one that changed under them fails.
+- Do not change the package id (`peekr`) or the channel names. Installed copies look for the
+  feed of the channel they were installed from, and Windows knows the installation by the id.

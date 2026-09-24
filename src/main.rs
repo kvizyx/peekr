@@ -28,6 +28,8 @@ use crate::config::Config;
 use crate::ocr::models::{ModelStore, OcrConfig};
 
 fn main() -> Result<()> {
+    update::init();
+
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     if !raw_args.is_empty() {
         platform::attach_parent_console();
@@ -55,19 +57,17 @@ fn main() -> Result<()> {
 /// A capture is not held to that: on Wayland the app cannot register a hotkey itself, so
 /// `peekr --capture` is bound to a system shortcut and runs alongside the tray app.
 fn run_tray(ocr: OcrConfig) -> Result<()> {
-    let Some(instance) = platform::single_instance() else {
+    // Held for as long as the app runs.
+    let Some(_instance) = platform::single_instance() else {
         log::info!("peekr is already running");
         return Ok(());
     };
 
     let config = Config::load();
 
-    // Before the models are looked for, since an update can bring new ones along.
-    if update::install(config.updates) {
-        // The process that takes over registers itself, so this one has to stand down first.
-        drop(instance);
-        return update::restart();
-    }
+    // Before the models are looked for, since an update can bring new ones along. An update that
+    // is installed ends this process, and Velopack starts the new version once it has.
+    update::install(config.updates);
 
     app::run_tray(ModelStore::new(models_dir()?), ocr, config);
     Ok(())
