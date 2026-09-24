@@ -1,6 +1,6 @@
 # Release
 
-Peekr is installed and updated by [Velopack](https://velopack.io). When the tray app starts, it
+An application is installed and updated by [Velopack](https://velopack.io). When the tray app starts, it
 reads the Velopack feed of the newest published release. If there is a newer version, it downloads
 it (a delta when it is one version behind, the full package otherwise) and restarts into it.
 
@@ -14,7 +14,7 @@ What a release carries, for each platform (`windows-x86_64`, `linux-x86_64`, `li
 The `.tar.gz` is for systems that cannot run an AppImage. It does not update itself, and neither
 does a development build.
 
-## Per-release
+## Workflow
 
 ### 1. Raise the version
 
@@ -40,26 +40,15 @@ copies of the unpublished release download the whole package.
 Look the draft over, and publish it. Nothing reaches users before that, since `releases/latest`,
 which the app follows, skips drafts. The next time an installed copy starts, it finds the release.
 
-### 4. Update winget, if the package is listed there
+### 4. Update WinGet
 
 ```bash
 cargo xtask winget X.Y.Z
-wingetcreate submit --token <github token> target/winget/manifests/k/kvizyx/Peekr/X.Y.Z
+wingetcreate submit --token <token> target/winget/manifests/k/kvizyx/Peekr/X.Y.Z
 ```
 
 Velopack keeps the version in "Apps & features" current as it updates, so `winget list` tells the
 truth in between.
-
-## Building locally
-
-`cargo xtask dist` needs the models (`cargo xtask models`), `cargo-about`
-(`cargo install cargo-about --features cli`), and `vpk`, which needs the .NET 8 SDK:
-
-```bash
-dotnet tool install -g vpk --version <the velopack version in Cargo.lock>
-```
-
-The result lands in `target/dist/release/`.
 
 ## What not to do
 

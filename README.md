@@ -1,10 +1,10 @@
-<h1 align="center">Peekr</h1>
+<h1 style="text-align: center;">Peekr</h1>
 
-<p align="center">
+<p style="text-align: center;">
   <img src="assets/icon.svg" width="160" alt="Peekr icon: a hand-drawn magnifying glass">
 </p>
 
-<p align="center">
+<p style="text-align: center;">
   <a href="https://github.com/kvizyx/peekr/releases/latest"><img src="https://img.shields.io/github/v/release/kvizyx/peekr?label=Release" alt="Latest release"></a>
   <a href="https://github.com/kvizyx/peekr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kvizyx/peekr/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/kvizyx/peekr?label=License" alt="License"></a>

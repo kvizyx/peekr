@@ -20,6 +20,9 @@ const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
 const RT_VERSION: u16 = 16;
 
+/// Marks the field that follows as a numeric resource type or name, rather than a name string.
+const ORDINAL: u16 = 0xFFFF;
+
 /// Moveable, pure and discardable, as `rc.exe` marks icons and version information.
 const MEMORY_FLAGS: u16 = 0x1030;
 /// English (United States), matching the string table below.
@@ -111,7 +114,7 @@ impl Resources {
             return Ok(());
         }
 
-        let out_dir = env::var_os("OUT_DIR").ok_or_else(|| invalid("OUT_DIR is not set"))?;
+        let out_dir = env::var_os("OUT_DIR").ok_or_else(|| Error::new(ErrorKind::NotFound, "OUT_DIR is not set"))?;
         let path = PathBuf::from(out_dir).join("resources.res");
         fs::write(&path, self.compile()?)?;
 
@@ -210,6 +213,16 @@ fn icon_group(images: &[IconImage<'_>]) -> Vec<u8> {
     out
 }
 
+/// Marks the block that follows as a `VS_FIXEDFILEINFO` structure.
+const VS_FFI_SIGNATURE: u32 = 0xFEEF_04BD;
+const VS_FFI_STRUCVERSION: u32 = 0x0001_0000;
+/// Every flag bit `dwFileFlags` could set is meaningful here, so all of them are valid.
+const VS_FFI_FILEFLAGSMASK: u32 = 0x3F;
+/// A 32-bit application for Windows NT, which is what `dwFileOS` calls Windows generally.
+const VOS_NT_WINDOWS32: u32 = 0x0004_0004;
+/// A standalone application, as opposed to a driver, font or one of `dwFileType`'s other kinds.
+const VFT_APP: u32 = 1;
+
 /// Builds the `VS_VERSIONINFO` structure.
 fn version_info(version: [u16; 4], strings: &[(String, String)]) -> Vec<u8> {
     let [major, minor, patch, build] = version.map(u32::from);
@@ -218,18 +231,18 @@ fn version_info(version: [u16; 4], strings: &[(String, String)]) -> Vec<u8> {
 
     let mut fixed = Vec::new();
     for value in [
-        0xFEEF_04BD, // Signature
-        0x0001_0000, // Structure version
-        high,
+        VS_FFI_SIGNATURE,
+        VS_FFI_STRUCVERSION,
+        high, // File version - major and minor packed into the high word
+        low,  // File version - patch and build (always 0) packed into the low word
+        high, // Product version, same as the file version
         low,
-        high,
-        low,
-        0x3F,        // All flags are valid
-        0,           // No flags set
-        0x0004_0004, // VOS_NT_WINDOWS32
-        1,           // VFT_APP
-        0,           // No subtype
-        0,           // No date
+        VS_FFI_FILEFLAGSMASK,
+        0, // No flags are set
+        VOS_NT_WINDOWS32,
+        VFT_APP,
+        0, // No subtype
+        0, // No date is recorded
         0,
     ] {
         put_u32(&mut fixed, value);
@@ -304,9 +317,9 @@ fn entry(out: &mut Vec<u8>, kind: u16, name: u16, flags: u16, language: u16, dat
 
     put_u32(out, data.len() as u32);
     put_u32(out, HEADER_SIZE);
-    put_u16(out, 0xFFFF);
+    put_u16(out, ORDINAL);
     put_u16(out, kind);
-    put_u16(out, 0xFFFF);
+    put_u16(out, ORDINAL);
     put_u16(out, name);
     put_u32(out, 0); // Data version
     put_u16(out, flags);
@@ -318,10 +331,12 @@ fn entry(out: &mut Vec<u8>, kind: u16, name: u16, flags: u16, language: u16, dat
     align(out);
 }
 
+/// Pads with zero bytes up to the next 4-byte boundary, as every entry and node here needs to be.
 fn align(out: &mut Vec<u8>) {
     out.resize(out.len().next_multiple_of(4), 0);
 }
 
+/// Appends the little-endian bytes of `value`. Not worth a dependency for two integer widths.
 fn put_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -337,12 +352,17 @@ fn put_utf16(out: &mut Vec<u8>, text: &str) {
     }
 }
 
+/// The `N` bytes at `at`, for a fixed-size little-endian read that fits entirely in `bytes`.
+fn read_le<const N: usize>(bytes: &[u8], at: usize) -> Option<[u8; N]> {
+    bytes.get(at..at + N)?.try_into().ok()
+}
+
 fn read_u16(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+    read_le(bytes, at).map(u16::from_le_bytes)
 }
 
 fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    read_le(bytes, at).map(u32::from_le_bytes)
 }
 
 fn invalid(message: &str) -> Error {
