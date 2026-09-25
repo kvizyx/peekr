@@ -1,2 +1,2 @@
 # Proper nouns that are not code identifiers ("..." keeps clippy's defaults).
-doc-valid-idents = ["GitHub", "PaddleOCR", "PaddlePaddle", "PowerToys", "XWayland", "..."]
+doc-valid-idents = ["AppKit", "GitHub", "PaddleOCR", "PaddlePaddle", "PowerToys", "XWayland", "..."]

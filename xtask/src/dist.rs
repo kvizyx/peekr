@@ -5,6 +5,7 @@
 //!
 //! - on Windows, `Setup.exe` and a portable zip;
 //! - on Linux, an `AppImage`;
+//! - on macOS, an app bundle, in a `Setup.pkg` installer and a portable zip;
 //! - everywhere, the full package of the release, a delta from the latest release when there is
 //!   one, and the feed (`releases.<channel>.json`) that installed copies look for updates in.
 //!
@@ -33,6 +34,8 @@ const AUTHORS: &str = "kvizyx";
 const SHORTCUTS: &str = "StartMenuRoot,Startup";
 /// Size of the icon an `AppImage` shows in menus and file managers.
 const LINUX_ICON_SIZE: u32 = 256;
+/// The identifier of the macOS app bundle, by which macOS keeps the permissions it is given.
+const BUNDLE_ID: &str = "io.github.kvizyx.peekr";
 /// Project files copied into the root of the archive.
 const DOCS: &[&str] = &["README.md", "LICENSE"];
 /// License files that are not generated, relative to the project root.
@@ -54,7 +57,7 @@ pub fn package(root: &Path) -> Result<()> {
 
     velopack(root, &build, &stage_dir, &release_dir)?;
 
-    if !cfg!(windows) {
+    if cfg!(target_os = "linux") {
         let archive = release_dir.join(format!("{}.tar.gz", build.prefix));
         write_tar_gz(&archive, &build.prefix, &build.entries)?;
         eprintln!("packed {} files into {}", build.entries.len(), archive.display());
@@ -147,6 +150,10 @@ fn velopack(root: &Path, build: &Build, stage_dir: &Path, release_dir: &Path) ->
 
     let icon = if cfg!(windows) {
         root.join("assets/icon.ico")
+    } else if cfg!(target_os = "macos") {
+        let icon = build.dist_dir.join("icon.icns");
+        crate::icon::icns(root, &icon)?;
+        icon
     } else {
         let icon = build.dist_dir.join("icon.png");
         crate::icon::png(root, LINUX_ICON_SIZE, &icon)?;
@@ -179,6 +186,9 @@ fn velopack(root: &Path, build: &Build, stage_dir: &Path, release_dir: &Path) ->
     .arg(&work_dir);
     if cfg!(windows) {
         pack.args(["--shortcuts", SHORTCUTS]);
+    }
+    if cfg!(target_os = "macos") {
+        pack.args(["--bundleId", BUNDLE_ID]);
     }
     run(&mut pack).context("vpk is required: dotnet tool install -g vpk")?;
 
@@ -233,7 +243,11 @@ fn executable() -> String {
 
 /// The .NET runtime identifier `vpk` knows this platform by, as `linux-arm64`.
 fn runtime() -> String {
-    let os = if cfg!(windows) { "win" } else { std::env::consts::OS };
+    let os = match std::env::consts::OS {
+        "windows" => "win",
+        "macos" => "osx",
+        other => other,
+    };
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x64",
         "aarch64" => "arm64",
@@ -416,6 +430,8 @@ mod tests {
             "peekr-linux-x86_64.AppImage",
             "peekr-windows-x86_64-Setup.exe",
             "peekr-windows-x86_64-Portable.zip",
+            "peekr-macos-aarch64-Setup.pkg",
+            "peekr-macos-aarch64-Portable.zip",
         ] {
             assert!(published(name), "{name} goes on the release");
         }
@@ -434,7 +450,7 @@ mod tests {
         let runtime = runtime();
 
         assert!(
-            ["win-x64", "linux-x64", "linux-arm64"].contains(&runtime.as_str()),
+            ["win-x64", "linux-x64", "linux-arm64", "osx-arm64", "osx-x64"].contains(&runtime.as_str()),
             "{runtime} is not one vpk knows"
         );
     }

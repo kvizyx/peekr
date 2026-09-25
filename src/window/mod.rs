@@ -2,7 +2,8 @@
 //!
 //! Windows presented through the GPU make the whole screen blink when they open and close
 //! on some setups, so the overlay and the settings window render egui into a pixel buffer and
-//! show it the way plain desktop apps do (GDI on Windows, shared memory on X11 and Wayland).
+//! show it the way plain desktop apps do (GDI on Windows, shared memory on X11 and Wayland, a
+//! Core Animation layer on macOS).
 
 #[cfg(not(test))]
 mod raster;
@@ -42,11 +43,59 @@ pub trait App {
     fn corner_radius(&self, _window: usize) -> f32 {
         0.0
     }
+
+    /// Whether the window covers a whole monitor, and has to be above everything on it.
+    fn covers_screen(&self, _window: usize) -> bool {
+        false
+    }
 }
 
 thread_local! {
     /// winit allows one event loop per process, so it is created once and reused for every window.
     static EVENT_LOOP: RefCell<Option<EventLoop<()>>> = const { RefCell::new(None) };
+}
+
+/// Starts the window system ahead of the first window.
+///
+/// On macOS the app finishes launching the first time winit's event loop runs, and the menu bar
+/// icon and the global hotkey need a launched app; elsewhere this only connects to the display
+/// early. A window system that cannot start now is tried again when a window opens.
+pub fn init() {
+    /// Leaves the event loop as soon as it has started.
+    struct Launch;
+
+    impl ApplicationHandler for Launch {
+        fn new_events(&mut self, event_loop: &ActiveEventLoop, _: StartCause) {
+            event_loop.exit();
+        }
+
+        fn resumed(&mut self, _: &ActiveEventLoop) {}
+
+        fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+    }
+
+    let launched = take_event_loop().and_then(|mut event_loop| {
+        let result = event_loop.run_app_on_demand(&mut Launch);
+        EVENT_LOOP.set(Some(event_loop));
+
+        result.context("starting the window event loop")
+    });
+
+    if let Err(e) = launched {
+        log::warn!("{e:#}");
+    }
+}
+
+/// The event loop created before, or a new one.
+fn take_event_loop() -> Result<EventLoop<()>> {
+    if let Some(event_loop) = EVENT_LOOP.take() {
+        return Ok(event_loop);
+    }
+
+    let mut builder = EventLoop::builder();
+    platform::configure_event_loop(&mut builder);
+
+    builder.build().context("creating the window event loop")
 }
 
 /// Opens windows and runs `app` in them until one of them closes, which closes them all.
@@ -57,10 +106,7 @@ pub fn run<A: App>(
     attributes: impl FnOnce(&ActiveEventLoop) -> Vec<WindowAttributes>,
     create: impl FnOnce(&[egui::Context]) -> A,
 ) -> Result<()> {
-    let mut event_loop = match EVENT_LOOP.take() {
-        Some(event_loop) => event_loop,
-        None => EventLoop::new().context("creating the window event loop")?,
-    };
+    let mut event_loop = take_event_loop()?;
 
     let mut runner = Runner {
         attributes: Some(attributes),
@@ -75,6 +121,7 @@ pub fn run<A: App>(
     // Destroy the windows before the next ones can be opened.
     runner.windows.clear();
     EVENT_LOOP.set(Some(event_loop));
+    platform::return_focus();
 
     result.context("window event loop failed")?;
     runner.error.map_or(Ok(()), Err)
@@ -85,12 +132,10 @@ pub fn run<A: App>(
 pub fn centered(event_loop: &ActiveEventLoop, size: [f32; 2]) -> WindowAttributes {
     let attributes = Window::default_attributes().with_inner_size(LogicalSize::new(size[0], size[1]));
 
-    let under_cursor = platform::cursor_position().and_then(|(x, y)| {
-        event_loop.available_monitors().find(|m| {
-            let (origin, area) = (m.position(), m.size());
-            (origin.x..origin.x + area.width as i32).contains(&x)
-                && (origin.y..origin.y + area.height as i32).contains(&y)
-        })
+    let under_cursor = platform::cursor_position().and_then(|cursor| {
+        event_loop
+            .available_monitors()
+            .find(|m| platform::monitor_contains(m, cursor))
     });
 
     let Some(monitor) = under_cursor.or_else(|| event_loop.primary_monitor()) else {
@@ -172,6 +217,10 @@ where
         for (index, window) in windows.iter_mut().enumerate() {
             let radius = app.corner_radius(index) * window.window.scale_factor() as f32;
             window.frame_radius = radius.round() as u32;
+
+            if app.covers_screen(index) {
+                platform::float_over_screen(&window.window);
+            }
         }
 
         let redrawn = windows
@@ -265,7 +314,7 @@ impl AppWindow {
             .create_window(attributes.with_visible(false))
             .context("creating a window")?;
         let window = Rc::new(window);
-        platform::disable_window_animations(&window);
+        platform::prepare_window(&window);
 
         let context = softbuffer::Context::new(Rc::clone(&window)).map_err(|e| anyhow!("{e}"))?;
         let surface = softbuffer::Surface::new(&context, Rc::clone(&window)).map_err(|e| anyhow!("{e}"))?;

@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-24.04, ubuntu-24.04-arm]
+        os: [windows-latest, macos-latest, ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -73,9 +73,9 @@ jobs:
     name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
-      # Windows too: half of the platform code only compiles, and is only tested, there.
+      # Windows and macOS too: their platform code only compiles, and is only tested, there.
       matrix:
-        os: [ubuntu-24.04, windows-latest]
+        os: [ubuntu-24.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

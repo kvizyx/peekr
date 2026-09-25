@@ -37,6 +37,22 @@ Download the latest release for your platform from the [Releases](https://github
 
 - `peekr-<version>-<platform>.tar.gz`
 
+**macOS** (Apple Silicon)
+
+- `peekr-macos-aarch64-Setup.pkg`
+- `peekr-macos-aarch64-Portable.zip`
+
+  The app is not signed, so macOS refuses to open it at first: open it from System Settings >
+  Privacy & Security > Open Anyway, or clear the quarantine flag:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Peekr.app
+  ```
+
+  Peekr lives in the menu bar. On the first capture macOS asks to allow it to record the screen;
+  allow it in System Settings > Privacy & Security > Screen & System Audio Recording, and start
+  Peekr again. The default hotkey is `Cmd+Shift+O`.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

@@ -1,7 +1,7 @@
 //! Keyboard shortcuts: parsing, display and conversion for the global hotkey and the settings UI.
 //!
 //! Shortcuts are written the way users see them, e.g. `Win+Shift+O`. `Win`, `Super`, `Meta` and
-//! `Cmd` all mean the same key, so a config file works on every platform.
+//! `Cmd` all mean the same key, as do `Alt` and `Option`, so a config file works on every platform.
 
 use std::fmt;
 use std::str::FromStr;
@@ -9,8 +9,7 @@ use std::str::FromStr;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Name of the Windows / Super / Command key on the current platform.
-pub const SUPER_LABEL: &str = if cfg!(windows) { "Win" } else { "Super" };
+use crate::platform::{ALT_KEY, SUPER_KEY};
 
 /// Keys a shortcut can end with: (name, hotkey code, egui key).
 #[rustfmt::skip]
@@ -59,8 +58,8 @@ pub struct Shortcut {
 }
 
 impl Default for Shortcut {
-    /// `Win/Super+Shift+O`: follows the Snipping Tool pattern (Win+Shift+S) and is free in
-    /// Windows, PowerToys, GNOME and KDE.
+    /// `Win/Super/Cmd+Shift+O`: follows the Snipping Tool pattern (Win+Shift+S) and is free in
+    /// Windows, PowerToys, GNOME, KDE and macOS.
     fn default() -> Self {
         Self {
             ctrl: false,
@@ -73,8 +72,9 @@ impl Default for Shortcut {
 }
 
 impl Shortcut {
-    /// Builds a shortcut from a key press in egui. egui does not report the Windows / Super key,
-    /// so its state comes separately. Returns `None` for keys that cannot end a shortcut.
+    /// Builds a shortcut from a key press in egui. egui reports the Windows / Super key only on
+    /// macOS, as Command, so its state comes separately. Returns `None` for keys that cannot end
+    /// a shortcut.
     pub fn from_key_press(pressed: egui::Key, modifiers: egui::Modifiers, super_key: bool) -> Option<Self> {
         let key = KEYS.iter().position(|&(_, _, key)| key == pressed)?;
 
@@ -82,7 +82,7 @@ impl Shortcut {
             ctrl: modifiers.ctrl,
             alt: modifiers.alt,
             shift: modifiers.shift,
-            super_key,
+            super_key: super_key || modifiers.mac_cmd,
             key,
         })
     }
@@ -98,13 +98,17 @@ impl Shortcut {
     }
 
     /// Why the shortcut cannot be used, if it cannot.
-    pub fn problem(&self) -> Option<&'static str> {
+    pub fn problem(&self) -> Option<String> {
         if !(self.ctrl || self.alt || self.shift || self.super_key) {
-            return Some("Hold Ctrl, Alt or the Windows/Super key too, otherwise the key stops working elsewhere.");
+            return Some(format!(
+                "Hold Ctrl, {ALT_KEY} or {SUPER_KEY} too, otherwise the key stops working elsewhere."
+            ));
         }
 
         if self.shift && !(self.ctrl || self.alt || self.super_key) {
-            return Some("Shift alone would block typing; hold Ctrl, Alt or the Windows/Super key too.");
+            return Some(format!(
+                "Shift alone would block typing; hold Ctrl, {ALT_KEY} or {SUPER_KEY} too."
+            ));
         }
 
         None
@@ -124,9 +128,9 @@ fn key_index(name: &str) -> Option<usize> {
 impl fmt::Display for Shortcut {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let modifiers = [
-            (self.super_key, SUPER_LABEL),
+            (self.super_key, SUPER_KEY),
             (self.ctrl, "Ctrl"),
-            (self.alt, "Alt"),
+            (self.alt, ALT_KEY),
             (self.shift, "Shift"),
         ];
 
@@ -205,10 +209,32 @@ mod tests {
     }
 
     #[test]
+    fn alt_key_has_several_names() {
+        for name in ["Alt+O", "Option+O"] {
+            let shortcut: Shortcut = name.parse().expect("valid shortcut");
+
+            assert!(shortcut.alt, "{name}");
+            assert_eq!(shortcut.to_string(), format!("{ALT_KEY}+O"));
+        }
+    }
+
+    #[test]
+    fn command_key_counts_as_the_super_key() {
+        let modifiers = egui::Modifiers {
+            mac_cmd: true,
+            ..Default::default()
+        };
+
+        let shortcut = Shortcut::from_key_press(egui::Key::O, modifiers, false).expect("supported key");
+
+        assert!(shortcut.super_key);
+    }
+
+    #[test]
     fn default_is_super_shift_o() {
         let shortcut = Shortcut::default();
 
-        assert_eq!(shortcut.to_string(), format!("{SUPER_LABEL}+Shift+O"));
+        assert_eq!(shortcut.to_string(), format!("{SUPER_KEY}+Shift+O"));
         assert!(shortcut.problem().is_none());
     }
 
@@ -238,7 +264,7 @@ mod tests {
 
         let shortcut = Shortcut::from_key_press(egui::Key::F9, modifiers, true).expect("supported key");
 
-        assert_eq!(shortcut.to_string(), format!("{SUPER_LABEL}+Ctrl+Shift+F9"));
+        assert_eq!(shortcut.to_string(), format!("{SUPER_KEY}+Ctrl+Shift+F9"));
         assert!(Shortcut::from_key_press(egui::Key::Backtick, modifiers, false).is_none());
     }
 }

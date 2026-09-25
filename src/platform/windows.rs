@@ -1,6 +1,8 @@
 use std::ptr::null_mut;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+use anyhow::Result;
+
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, FALSE, GetLastError, HANDLE, HWND, POINT, TRUE,
 };
@@ -15,6 +17,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
     TranslateMessage, WM_APP, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event_loop::EventLoopBuilder;
+use winit::monitor::MonitorHandle;
+use winit::window::{Window, WindowAttributes};
+
+use crate::capture::Screenshot;
+
+pub const SUPER_KEY: &str = "Win";
+pub const ALT_KEY: &str = "Alt";
+pub const COMMAND_KEY: &str = "Ctrl";
 
 /// Lets a GUI-subsystem executable print to the console it was started from.
 pub fn attach_parent_console() {
@@ -34,6 +46,9 @@ pub fn trim_working_set() {
     // SAFETY: the current process handle is always valid; no pointers involved.
     unsafe { K32EmptyWorkingSet(GetCurrentProcess()) };
 }
+
+/// winit's defaults suit Windows.
+pub fn configure_event_loop(_builder: &mut EventLoopBuilder<()>) {}
 
 /// Directory for per-user settings (`%APPDATA%`).
 pub fn config_dir() -> Option<std::path::PathBuf> {
@@ -88,7 +103,7 @@ fn wide(text: &str) -> Vec<u16> {
 /// The caption matters because an undecorated window on Windows keeps its caption styles: the
 /// frame is hidden by the compositor rather than taken away. The system's move loop still paints
 /// what those styles promise, so the minimise and close buttons flash over a window being dragged.
-pub fn use_own_frame(window: &winit::window::Window, radius: u32) {
+pub fn use_own_frame(window: &Window, radius: u32) {
     let Some(hwnd) = hwnd(window) else {
         return;
     };
@@ -126,7 +141,7 @@ pub fn use_own_frame(window: &winit::window::Window, radius: u32) {
 }
 
 /// The Win32 handle behind a winit window.
-fn hwnd(window: &winit::window::Window) -> Option<HWND> {
+fn hwnd(window: &Window) -> Option<HWND> {
     use winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 
     let handle = window.window_handle().ok()?;
@@ -139,7 +154,7 @@ fn hwnd(window: &winit::window::Window) -> Option<HWND> {
 
 /// Stops Windows from animating the window when it is shown and hidden. The animation scales and
 /// fades the window, which for a screen-sized overlay looks like the whole screen jumping.
-pub fn disable_window_animations(window: &winit::window::Window) {
+pub fn prepare_window(window: &Window) {
     let Some(hwnd) = hwnd(window) else {
         return;
     };
@@ -156,6 +171,43 @@ pub fn disable_window_animations(window: &winit::window::Window) {
             size_of::<windows_sys::core::BOOL>() as u32,
         );
     }
+}
+
+/// An always-on-top window is above the taskbar already.
+pub fn float_over_screen(_window: &Window) {}
+
+/// Windows activates the next window by itself.
+pub fn return_focus() {}
+
+/// Every app may capture the screen on Windows.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "same API as macOS, where the user can deny access"
+)]
+pub fn screen_capture_access() -> Result<()> {
+    Ok(())
+}
+
+/// Makes the window cover the monitor the screenshot was taken from: a plain window of the
+/// monitor's size, as switching the display in and out of fullscreen mode makes it blink.
+pub fn cover_monitor(
+    attributes: WindowAttributes,
+    _: &[MonitorHandle],
+    _: usize,
+    _: usize,
+    shot: &Screenshot,
+) -> WindowAttributes {
+    use winit::platform::windows::WindowAttributesExtWindows as _;
+
+    attributes
+        .with_position(PhysicalPosition::new(shot.origin.0, shot.origin.1))
+        .with_inner_size(PhysicalSize::new(shot.image.width(), shot.image.height()))
+        .with_skip_taskbar(true)
+}
+
+/// Whether the monitor contains a point in desktop coordinates.
+pub fn monitor_contains(monitor: &MonitorHandle, point: (i32, i32)) -> bool {
+    super::physical_bounds_contain(monitor, point)
 }
 
 /// Cursor position in physical virtual-desktop coordinates.
@@ -190,7 +242,7 @@ impl EventLoop {
     }
 
     /// Returns the next event, or `None` when the channel is closed or `WM_QUIT` arrives.
-    #[expect(clippy::unused_self, reason = "same API as the Linux event loop")]
+    #[expect(clippy::unused_self, reason = "same API as the other platforms' event loops")]
     pub fn next<T>(&self, events: &Receiver<T>) -> Option<T> {
         loop {
             match events.try_recv() {

@@ -14,12 +14,11 @@ use egui::{
     Vec2, ViewportCommand, pos2, vec2,
 };
 use image::RgbaImage;
-use winit::monitor::MonitorHandle;
-use winit::window::{Window, WindowAttributes, WindowLevel};
+use winit::window::{Window, WindowLevel};
 
 use crate::capture::Screenshot;
 use crate::theme::{self, ACCENT};
-use crate::window;
+use crate::{platform, window};
 
 const DIM: Color32 = Color32::from_black_alpha(150);
 /// Distance between the top of the screen and the usage hint.
@@ -76,17 +75,28 @@ pub fn capture_text(screens: &[Screenshot], recognize: Recognize<'_>, copy: Copy
     window::run(
         |event_loop| {
             let monitors: Vec<_> = event_loop.available_monitors().collect();
+            log::debug!(
+                "window system monitors: {:?}",
+                monitors.iter().map(|m| (m.name(), m.position())).collect::<Vec<_>>()
+            );
 
             screens
                 .iter()
                 .enumerate()
                 .map(|(index, shot)| {
+                    log::debug!(
+                        "captured monitor {:?} at {:?}, {:?} in size",
+                        shot.monitor_name,
+                        shot.origin,
+                        shot.size
+                    );
+
                     let attributes = Window::default_attributes()
                         .with_title("peekr")
                         .with_decorations(false)
                         .with_window_level(WindowLevel::AlwaysOnTop);
 
-                    cover_monitor(attributes, &monitors, screens.len(), index, shot)
+                    platform::cover_monitor(attributes, &monitors, screens.len(), index, shot)
                 })
                 .collect()
         },
@@ -121,78 +131,6 @@ pub fn capture_text(screens: &[Screenshot], recognize: Recognize<'_>, copy: Copy
             }
         },
     )
-}
-
-/// Makes the window cover the monitor the screenshot was taken from: a plain window of the
-/// monitor's size, as switching the display in and out of fullscreen mode makes it blink.
-#[cfg(windows)]
-fn cover_monitor(
-    attributes: WindowAttributes,
-    _: &[MonitorHandle],
-    _: usize,
-    _: usize,
-    shot: &Screenshot,
-) -> WindowAttributes {
-    use winit::dpi::{PhysicalPosition, PhysicalSize};
-    use winit::platform::windows::WindowAttributesExtWindows as _;
-
-    attributes
-        .with_position(PhysicalPosition::new(shot.origin.0, shot.origin.1))
-        .with_inner_size(PhysicalSize::new(shot.image.width(), shot.image.height()))
-        .with_skip_taskbar(true)
-}
-
-/// Makes the window cover the monitor the screenshot was taken from. Wayland does not let
-/// clients position windows, so fullscreen is the only way to get there.
-///
-/// xcap and winit list monitors in different orders, so the monitor is found by its output name,
-/// then by position, and only then by index when both see the same number of monitors.
-#[cfg(not(windows))]
-fn cover_monitor(
-    attributes: WindowAttributes,
-    monitors: &[MonitorHandle],
-    screen_count: usize,
-    index: usize,
-    shot: &Screenshot,
-) -> WindowAttributes {
-    use winit::dpi::PhysicalPosition;
-    use winit::window::Fullscreen;
-
-    log::debug!(
-        "captured monitor {:?} at {:?}; window system monitors: {:?}",
-        shot.monitor_name,
-        shot.origin,
-        monitors.iter().map(|m| (m.name(), m.position())).collect::<Vec<_>>()
-    );
-
-    let monitor = monitors
-        .iter()
-        .find(|m| {
-            m.name()
-                .is_some_and(|name| shot.monitor_name.as_deref() == Some(&*name))
-        })
-        .or_else(|| {
-            monitors.iter().find(|m| {
-                let position = m.position();
-                (position.x, position.y) == shot.origin
-            })
-        })
-        .or_else(|| (monitors.len() == screen_count).then(|| monitors.get(index)).flatten())
-        .cloned();
-
-    if monitor.is_none() {
-        log::warn!(
-            "no monitor matches {:?} at {:?}; the overlay opens on the current one",
-            shot.monitor_name,
-            shot.origin
-        );
-    }
-
-    // X11 window managers put a fullscreen window on the monitor it was mapped on, so it starts
-    // out there as well.
-    attributes
-        .with_position(PhysicalPosition::new(shot.origin.0, shot.origin.1))
-        .with_fullscreen(Some(Fullscreen::Borderless(monitor)))
 }
 
 /// One overlay window: a monitor's screenshot.
@@ -345,6 +283,10 @@ impl window::App for Overlay<'_> {
 
     fn take_repaint(&mut self, window: usize) -> bool {
         self.repaint.get_mut(window).is_some_and(std::mem::take)
+    }
+
+    fn covers_screen(&self, _window: usize) -> bool {
+        true
     }
 }
 
@@ -599,7 +541,7 @@ fn show_text(ui: &mut egui::Ui, text: &str) -> bool {
         // The row is as tall as the button from the start, so the hints are centered against it.
         ui.set_min_height(BUTTON_HEIGHT);
 
-        key_hint(ui, "Ctrl + C", "copy");
+        key_hint(ui, &format!("{} + C", platform::COMMAND_KEY), "copy");
         ui.add_space(8.0);
         key_hint(ui, "Esc", "close");
 

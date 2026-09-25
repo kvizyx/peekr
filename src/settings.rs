@@ -76,7 +76,8 @@ struct SettingsApp<'a> {
     updates: bool,
     /// Waiting for the user to press the new shortcut.
     recording: bool,
-    /// egui's `Modifiers` has no Windows / Super key, so its presses are tracked separately.
+    /// egui's `Modifiers` has no Windows / Super key outside macOS, so its presses are tracked
+    /// separately.
     super_held: bool,
     message: Option<Message>,
     handlers: Handlers<'a>,
@@ -274,7 +275,7 @@ impl SettingsApp<'_> {
 
     fn apply(&mut self, shortcut: Shortcut) {
         if let Some(problem) = shortcut.problem() {
-            self.message = Some(Message::Error(problem.to_owned()));
+            self.message = Some(Message::Error(problem));
             return;
         }
 

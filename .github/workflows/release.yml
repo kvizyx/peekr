@@ -40,6 +40,9 @@ jobs:
             os: ubuntu-24.04
           - platform: linux-aarch64
             os: ubuntu-24.04-arm
+          # Apple Silicon only: that is what macos-latest runs on.
+          - platform: macos-aarch64
+            os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

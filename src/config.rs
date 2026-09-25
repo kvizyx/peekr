@@ -1,5 +1,6 @@
 //! User settings stored in `config.toml` in the platform's config directory
-//! (`%APPDATA%\peekr` on Windows, `$XDG_CONFIG_HOME/peekr` or `~/.config/peekr` on Linux).
+//! (`%APPDATA%\peekr` on Windows, `$XDG_CONFIG_HOME/peekr` or `~/.config/peekr` on Linux,
+//! `~/Library/Application Support/peekr` on macOS).
 
 use std::fs;
 use std::path::PathBuf;

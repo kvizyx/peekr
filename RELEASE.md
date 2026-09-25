@@ -4,12 +4,14 @@ An application is installed and updated by [Velopack](https://velopack.io). When
 reads the Velopack feed of the newest published release. If there is a newer version, it downloads
 it (a delta when it is one version behind, the full package otherwise) and restarts into it.
 
-What a release carries, for each platform (`windows-x86_64`, `linux-x86_64`, `linux-aarch64`):
+What a release carries, for each platform (`windows-x86_64`, `linux-x86_64`, `linux-aarch64`,
+`macos-aarch64`):
 
 - `releases.<platform>.json`: the feed installed copies read;
 - `peekr-<version>-<platform>-full.nupkg`, and `-delta.nupkg` when there was a release before;
 - for people: `peekr-windows-x86_64-Setup.exe` and `-Portable.zip` on Windows, and on Linux
-  `peekr-<platform>.AppImage` and `peekr-<version>-<platform>.tar.gz`.
+  `peekr-<platform>.AppImage` and `peekr-<version>-<platform>.tar.gz`, and on macOS
+  `peekr-macos-aarch64-Setup.pkg` and `-Portable.zip`, both holding the `Peekr.app` bundle.
 
 The `.tar.gz` is for systems that cannot run an AppImage. It does not update itself, and neither
 does a development build.

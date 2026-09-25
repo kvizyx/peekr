@@ -1,13 +1,26 @@
 use std::sync::mpsc::Receiver;
 
+use anyhow::Result;
+use winit::dpi::PhysicalPosition;
+use winit::event_loop::EventLoopBuilder;
+use winit::monitor::MonitorHandle;
+use winit::window::{Fullscreen, Window, WindowAttributes};
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::ConnectionExt as _;
 
-/// Console output works out of the box on Linux.
-pub fn attach_parent_console() {}
+use crate::capture::Screenshot;
+
+pub use super::unix::{attach_parent_console, single_instance};
+
+pub const SUPER_KEY: &str = "Super";
+pub const ALT_KEY: &str = "Alt";
+pub const COMMAND_KEY: &str = "Ctrl";
 
 /// X11 and Wayland report monitor geometry in physical pixels already.
 pub fn init_dpi_awareness() {}
+
+/// winit's defaults suit Linux.
+pub fn configure_event_loop(_builder: &mut EventLoopBuilder<()>) {}
 
 /// Returns memory freed by the allocator back to the system.
 pub fn trim_working_set() {
@@ -23,52 +36,78 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
-}
-
-/// Held for as long as this process is the running instance.
-pub struct InstanceLock(
-    /// Nothing reads it: holding the file open is what holds the lock, and closing it, whenever
-    /// and however that happens, is what releases it.
-    #[expect(dead_code, reason = "the open file is the lock")]
-    Option<std::fs::File>,
-);
-
-/// Marks this process as the running instance, or returns `None` when another one already is.
-///
-/// A `flock` on a file in the runtime directory: the kernel drops it when the process ends,
-/// however it ends, so a crash cannot leave the app locked out of starting again.
-pub fn single_instance() -> Option<InstanceLock> {
-    use std::os::fd::AsRawFd as _;
-
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
-
-    // Without a lock file the app runs on; it just cannot tell whether it is alone.
-    let Ok(file) = std::fs::File::create(dir.join("peekr.lock")) else {
-        return Some(InstanceLock(None));
-    };
-
-    // SAFETY: the descriptor is valid for as long as the file is open, which is as long as the
-    // lock this returns is held.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        return Some(InstanceLock(Some(file)));
-    }
-
-    // Only a lock somebody else holds means another instance is up. Anything else, such as a
-    // filesystem that does not support locking, is no reason to refuse to start.
-    let taken = std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock;
-
-    (!taken).then_some(InstanceLock(None))
+        .or_else(|| Some(super::unix::home_dir()?.join(".config")))
 }
 
 /// Neither X11 nor Wayland lets an opaque window be given a shape of its own, so a window that
 /// draws its own frame keeps its corners square here.
-pub fn use_own_frame(_window: &winit::window::Window, _radius: u32) {}
+pub fn use_own_frame(_window: &Window, _radius: u32) {}
 
-/// X11 and Wayland offer no portable way to opt a window out of compositor animations.
-pub fn disable_window_animations(_window: &winit::window::Window) {}
+/// X11 and Wayland offer no portable way to opt a window out of compositor animations, and
+/// nothing else needs doing.
+pub fn prepare_window(_window: &Window) {}
+
+/// A fullscreen window is above everything already.
+pub fn float_over_screen(_window: &Window) {}
+
+/// The window manager hands focus on by itself.
+pub fn return_focus() {}
+
+/// xcap reads the screen through X11 or the desktop portal, which asks the user itself.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "same API as macOS, where the user can deny access"
+)]
+pub fn screen_capture_access() -> Result<()> {
+    Ok(())
+}
+
+/// Makes the window cover the monitor the screenshot was taken from. Wayland does not let
+/// clients position windows, so fullscreen is the only way to get there.
+///
+/// xcap and winit list monitors in different orders, so the monitor is found by its output name,
+/// then by position, and only then by index when both see the same number of monitors.
+pub fn cover_monitor(
+    attributes: WindowAttributes,
+    monitors: &[MonitorHandle],
+    screen_count: usize,
+    index: usize,
+    shot: &Screenshot,
+) -> WindowAttributes {
+    let monitor = monitors
+        .iter()
+        .find(|m| {
+            m.name()
+                .is_some_and(|name| shot.monitor_name.as_deref() == Some(&*name))
+        })
+        .or_else(|| {
+            monitors.iter().find(|m| {
+                let position = m.position();
+                (position.x, position.y) == shot.origin
+            })
+        })
+        .or_else(|| (monitors.len() == screen_count).then(|| monitors.get(index)).flatten())
+        .cloned();
+
+    if monitor.is_none() {
+        log::warn!(
+            "no monitor matches {:?} at {:?}; the overlay opens on the current one",
+            shot.monitor_name,
+            shot.origin
+        );
+    }
+
+    // X11 window managers put a fullscreen window on the monitor it was mapped on, so it starts
+    // out there as well.
+    attributes
+        .with_position(PhysicalPosition::new(shot.origin.0, shot.origin.1))
+        .with_fullscreen(Some(Fullscreen::Borderless(monitor)))
+}
+
+/// Whether the monitor contains a point in desktop coordinates.
+pub fn monitor_contains(monitor: &MonitorHandle, point: (i32, i32)) -> bool {
+    super::physical_bounds_contain(monitor, point)
+}
 
 /// Cursor position in virtual-desktop pixels, if the display server exposes it.
 ///
@@ -102,13 +141,13 @@ impl EventLoop {
         Self
     }
 
-    #[expect(clippy::unused_self, reason = "same API as the Windows event loop")]
+    #[expect(clippy::unused_self, reason = "same API as the other platforms' event loops")]
     pub fn waker(&self) -> Waker {
         Waker
     }
 
     /// Returns the next event, or `None` when the channel is closed.
-    #[expect(clippy::unused_self, reason = "same API as the Windows event loop")]
+    #[expect(clippy::unused_self, reason = "same API as the other platforms' event loops")]
     pub fn next<T>(&self, events: &Receiver<T>) -> Option<T> {
         events.recv().ok()
     }
@@ -119,6 +158,6 @@ impl EventLoop {
 pub struct Waker;
 
 impl Waker {
-    #[expect(clippy::unused_self, reason = "same API as the Windows waker")]
+    #[expect(clippy::unused_self, reason = "same API as the other platforms' wakers")]
     pub fn wake(self) {}
 }

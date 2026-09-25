@@ -15,10 +15,10 @@ use crate::platform::{EventLoop, Waker};
 use crate::shortcut::Shortcut;
 use crate::tray::{Tray, TrayAction};
 use crate::worker::OcrWorker;
-use crate::{capture, clipboard, overlay, settings};
+use crate::{capture, clipboard, overlay, settings, window};
 
 /// Everything the main thread reacts to. Hotkey, tray and worker callbacks run on their own
-/// threads (or inside the Win32 message pump) and only send events.
+/// threads (or inside the Win32 message pump, or the AppKit one) and only send events.
 enum AppEvent {
     Capture,
     OpenSettings,
@@ -45,6 +45,8 @@ impl EventSender {
 }
 
 pub fn run_tray(store: ModelStore, ocr_config: OcrConfig, mut config: Config) {
+    window::init();
+
     let event_loop = EventLoop::new();
     let (sender, events) = channel();
     let waiting = Arc::new(AtomicBool::new(false));

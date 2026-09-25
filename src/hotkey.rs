@@ -13,7 +13,7 @@ pub struct GlobalHotkey {
 
 impl GlobalHotkey {
     /// `on_press` runs on the thread that delivers hotkey events (the Win32 message pump on
-    /// Windows, a background X11 thread on Linux).
+    /// Windows, a background X11 thread on Linux, the AppKit event loop on macOS).
     pub fn new(on_press: impl Fn() + Send + Sync + 'static) -> Result<Self> {
         let manager = GlobalHotKeyManager::new().context("creating the hotkey manager")?;
 
