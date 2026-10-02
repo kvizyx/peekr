@@ -83,21 +83,25 @@ const VALUE_NOT_FOUND: i32 = 0x8007_0002_u32.cast_signed();
 /// Puts `dir` on the user's `PATH`, unless it is there already. Consoles opened from then on find
 /// the programs in it; one that is already open keeps the `PATH` it started with.
 pub fn add_to_path(dir: &Path) {
-    edit_user_path(dir, true);
+    edit_user_path(|path| with_entry(path, &dir.to_string_lossy()));
 }
 
 /// Takes `dir` off the user's `PATH`.
 pub fn remove_from_path(dir: &Path) {
-    edit_user_path(dir, false);
+    edit_user_path(|path| without_entry(path, &dir.to_string_lossy()));
 }
 
-fn edit_user_path(dir: &Path, present: bool) {
-    if let Err(e) = try_edit_user_path(dir, present) {
+/// Applies `edit` to the user's `PATH`, which leaves it alone by returning `None`.
+///
+/// An edit leaves every entry but its own as the user wrote it, down to empty entries and a
+/// trailing separator: the `PATH` is theirs, and only the one entry is ours.
+fn edit_user_path(edit: impl FnOnce(&str) -> Option<String>) {
+    if let Err(e) = try_edit_user_path(edit) {
         log::warn!("cannot update PATH: {e}");
     }
 }
 
-fn try_edit_user_path(dir: &Path, present: bool) -> windows_registry::Result<()> {
+fn try_edit_user_path(edit: impl FnOnce(&str) -> Option<String>) -> windows_registry::Result<()> {
     let environment = windows_registry::CURRENT_USER
         .options()
         .read()
@@ -112,7 +116,7 @@ fn try_edit_user_path(dir: &Path, present: bool) -> windows_registry::Result<()>
         Err(e) => return Err(e),
     };
 
-    let Some(path) = edited_path(&path, &dir.to_string_lossy(), present) else {
+    let Some(path) = edit(&path) else {
         return Ok(());
     };
 
@@ -140,28 +144,37 @@ fn try_edit_user_path(dir: &Path, present: bool) -> windows_registry::Result<()>
     Ok(())
 }
 
-/// `path` with `dir` added or removed, or `None` when that would change nothing.
-///
-/// Everything else is left as the user wrote it, down to empty entries and a trailing separator:
-/// the `PATH` is theirs, and only the one entry is ours.
-fn edited_path(path: &str, dir: &str, present: bool) -> Option<String> {
-    // Windows treats paths case-insensitively, and does not care for a trailing separator.
-    let normalized = |entry: &str| entry.trim().trim_end_matches('\\').to_lowercase();
-    let is_dir = |entry: &&str| normalized(entry) == normalized(dir);
-
-    let listed = path.split(';').any(|entry| is_dir(&entry));
-
-    match (present, listed) {
-        (true, false) if path.is_empty() => Some(dir.to_owned()),
-        // The separator follows the entry, as it did the ones before it.
-        (true, false) if path.ends_with(';') => Some(format!("{path}{dir};")),
-        (true, false) => Some(format!("{path};{dir}")),
-        (false, true) => {
-            let kept: Vec<&str> = path.split(';').filter(|entry| !is_dir(entry)).collect();
-            Some(kept.join(";"))
-        }
-        _ => None,
+/// `path` with `dir` appended, or `None` when it is listed already.
+fn with_entry(path: &str, dir: &str) -> Option<String> {
+    if path.split(';').any(|entry| same_dir(entry, dir)) {
+        return None;
     }
+
+    let added = if path.is_empty() {
+        dir.to_owned()
+    } else if path.ends_with(';') {
+        // Each entry is followed by a separator here, so this one is too.
+        format!("{path}{dir};")
+    } else {
+        format!("{path};{dir}")
+    };
+
+    Some(added)
+}
+
+/// `path` without `dir`, or `None` when it is not listed.
+fn without_entry(path: &str, dir: &str) -> Option<String> {
+    let entries: Vec<&str> = path.split(';').collect();
+    let kept: Vec<&str> = entries.iter().copied().filter(|entry| !same_dir(entry, dir)).collect();
+
+    (kept.len() < entries.len()).then(|| kept.join(";"))
+}
+
+/// Whether a `PATH` entry names `dir`. Windows ignores case in paths, and a trailing separator.
+fn same_dir(entry: &str, dir: &str) -> bool {
+    let normalized = |path: &str| path.trim().trim_end_matches('\\').to_lowercase();
+
+    normalized(entry) == normalized(dir)
 }
 
 /// A null-terminated UTF-16 string, the only kind the `W` functions take.
@@ -339,19 +352,19 @@ mod tests {
     #[test]
     fn a_directory_is_added_once() {
         assert_eq!(
-            edited_path(r"C:\tools;%USERPROFILE%\bin", DIR, true).as_deref(),
+            with_entry(r"C:\tools;%USERPROFILE%\bin", DIR).as_deref(),
             Some(r"C:\tools;%USERPROFILE%\bin;C:\Users\me\AppData\Local\peekr\current")
         );
-        assert_eq!(edited_path("", DIR, true).as_deref(), Some(DIR), "an empty PATH");
+        assert_eq!(with_entry("", DIR).as_deref(), Some(DIR), "an empty PATH");
         assert_eq!(
-            edited_path(r"C:\tools;", DIR, true).as_deref(),
+            with_entry(r"C:\tools;", DIR).as_deref(),
             Some(r"C:\tools;C:\Users\me\AppData\Local\peekr\current;"),
             "a trailing separator is kept after the new entry"
         );
 
         let listed = r"C:\tools;c:\users\me\appdata\local\peekr\current\";
         assert_eq!(
-            edited_path(listed, DIR, true),
+            with_entry(listed, DIR),
             None,
             "already there, in another case and with a trailing separator"
         );
@@ -362,18 +375,18 @@ mod tests {
         let path = format!(r"C:\tools;;{DIR};%USERPROFILE%\bin;");
 
         assert_eq!(
-            edited_path(&path, DIR, false).as_deref(),
+            without_entry(&path, DIR).as_deref(),
             Some(r"C:\tools;;%USERPROFILE%\bin;"),
             "the empty entry and the trailing separator stay"
         );
-        assert_eq!(edited_path(r"C:\tools", DIR, false), None, "not there to begin with");
+        assert_eq!(without_entry(r"C:\tools", DIR), None, "not there to begin with");
     }
 
     #[test]
     fn adding_and_removing_gives_back_the_path_as_it_was() {
         for path in ["", r"C:\tools", r"C:\tools;", r"C:\tools;;%USERPROFILE%\bin;"] {
-            let added = edited_path(path, DIR, true).expect("added");
-            let removed = edited_path(&added, DIR, false).expect("removed");
+            let added = with_entry(path, DIR).expect("added");
+            let removed = without_entry(&added, DIR).expect("removed");
 
             assert_eq!(removed, path);
         }
