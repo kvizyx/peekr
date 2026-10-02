@@ -1,20 +1,15 @@
-use std::io;
 use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+use windows_registry::Type;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, FALSE, GetLastError, HANDLE, HWND, LPARAM,
-    POINT, TRUE, WIN32_ERROR,
+    CloseHandle, ERROR_ALREADY_EXISTS, FALSE, GetLastError, HANDLE, HWND, LPARAM, POINT, TRUE,
 };
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
 use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
-use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ, REG_VALUE_TYPE, RegCloseKey,
-    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
-};
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, GetCurrentThreadId};
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -82,6 +77,9 @@ pub fn single_instance() -> Option<InstanceLock> {
     Some(InstanceLock(mutex))
 }
 
+/// What the registry reports for a value that is not there: `ERROR_FILE_NOT_FOUND`, as an HRESULT.
+const VALUE_NOT_FOUND: i32 = 0x8007_0002_u32.cast_signed();
+
 /// Puts `dir` on the user's `PATH`, unless it is there already. Consoles opened from then on find
 /// the programs in it; one that is already open keeps the `PATH` it started with.
 pub fn add_to_path(dir: &Path) {
@@ -99,17 +97,30 @@ fn edit_user_path(dir: &Path, present: bool) {
     }
 }
 
-fn try_edit_user_path(dir: &Path, present: bool) -> io::Result<()> {
-    let key = RegistryKey::open_environment()?;
+fn try_edit_user_path(dir: &Path, present: bool) -> windows_registry::Result<()> {
+    let environment = windows_registry::CURRENT_USER
+        .options()
+        .read()
+        .write()
+        .open("Environment")?;
 
-    // Usually REG_EXPAND_SZ, so that entries such as `%USERPROFILE%\bin` keep working; whatever
-    // it is, it stays.
-    let (kind, path) = key.string("Path")?.unwrap_or((REG_EXPAND_SZ, String::new()));
+    // Usually an expandable string, so that entries such as `%USERPROFILE%\bin` keep working;
+    // whichever kind it is, it stays.
+    let (expandable, path) = match environment.get_value("Path") {
+        Ok(value) => (value.ty() == Type::ExpandString, String::try_from(value)?),
+        Err(e) if e.code().0 == VALUE_NOT_FOUND => (true, String::new()),
+        Err(e) => return Err(e),
+    };
 
     let Some(path) = edited_path(&path, &dir.to_string_lossy(), present) else {
         return Ok(());
     };
-    key.set_string("Path", kind, &path)?;
+
+    if expandable {
+        environment.set_expand_string("Path", &path)?;
+    } else {
+        environment.set_string("Path", &path)?;
+    }
 
     // Tells Explorer, and the consoles it starts, to read the environment again.
     let environment = wide("Environment");
@@ -130,120 +141,26 @@ fn try_edit_user_path(dir: &Path, present: bool) -> io::Result<()> {
 }
 
 /// `path` with `dir` added or removed, or `None` when that would change nothing.
+///
+/// Everything else is left as the user wrote it, down to empty entries and a trailing separator:
+/// the `PATH` is theirs, and only the one entry is ours.
 fn edited_path(path: &str, dir: &str, present: bool) -> Option<String> {
     // Windows treats paths case-insensitively, and does not care for a trailing separator.
     let normalized = |entry: &str| entry.trim().trim_end_matches('\\').to_lowercase();
-    let dir_normalized = normalized(dir);
+    let is_dir = |entry: &&str| normalized(entry) == normalized(dir);
 
-    let mut entries: Vec<&str> = path.split(';').filter(|entry| !entry.trim().is_empty()).collect();
-    let listed = entries.iter().any(|entry| normalized(entry) == dir_normalized);
+    let listed = path.split(';').any(|entry| is_dir(&entry));
 
     match (present, listed) {
-        (true, false) => entries.push(dir),
-        (false, true) => entries.retain(|entry| normalized(entry) != dir_normalized),
-        _ => return None,
-    }
-
-    Some(entries.join(";"))
-}
-
-/// `HKEY_CURRENT_USER\Environment`, closed when dropped.
-struct RegistryKey(HKEY);
-
-impl RegistryKey {
-    fn open_environment() -> io::Result<Self> {
-        let path = wide("Environment");
-        let mut key: HKEY = null_mut();
-
-        // SAFETY: the path is null-terminated, and `key` is only written on success.
-        let opened = unsafe {
-            RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                path.as_ptr(),
-                0,
-                KEY_QUERY_VALUE | KEY_SET_VALUE,
-                &raw mut key,
-            )
-        };
-
-        check(opened)?;
-        Ok(Self(key))
-    }
-
-    /// A string value and its kind, or `None` when there is no such value.
-    fn string(&self, name: &str) -> io::Result<Option<(REG_VALUE_TYPE, String)>> {
-        let name = wide(name);
-        let mut kind = 0;
-        let mut bytes = 0;
-
-        // SAFETY: the name is null-terminated; a null buffer asks for the size, written to `bytes`.
-        let sized = unsafe {
-            RegQueryValueExW(
-                self.0,
-                name.as_ptr(),
-                null_mut(),
-                &raw mut kind,
-                null_mut(),
-                &raw mut bytes,
-            )
-        };
-        if sized == ERROR_FILE_NOT_FOUND {
-            return Ok(None);
+        (true, false) if path.is_empty() => Some(dir.to_owned()),
+        // The separator follows the entry, as it did the ones before it.
+        (true, false) if path.ends_with(';') => Some(format!("{path}{dir};")),
+        (true, false) => Some(format!("{path};{dir}")),
+        (false, true) => {
+            let kept: Vec<&str> = path.split(';').filter(|entry| !is_dir(entry)).collect();
+            Some(kept.join(";"))
         }
-        check(sized)?;
-
-        if kind != REG_SZ && kind != REG_EXPAND_SZ {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "PATH is not a string"));
-        }
-
-        // One unit of slack: a value stored without its terminator still has room for one.
-        let mut buffer = vec![0u16; bytes as usize / size_of::<u16>() + 1];
-        let mut bytes = size_of_val(buffer.as_slice()) as u32;
-
-        // SAFETY: the buffer holds `bytes` writable bytes, which is what RegQueryValueExW is told.
-        let read = unsafe {
-            RegQueryValueExW(
-                self.0,
-                name.as_ptr(),
-                null_mut(),
-                &raw mut kind,
-                buffer.as_mut_ptr().cast(),
-                &raw mut bytes,
-            )
-        };
-        check(read)?;
-
-        buffer.truncate(bytes as usize / size_of::<u16>());
-        let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
-
-        Ok(Some((kind, String::from_utf16_lossy(&buffer[..end]))))
-    }
-
-    fn set_string(&self, name: &str, kind: REG_VALUE_TYPE, value: &str) -> io::Result<()> {
-        let name = wide(name);
-        let value = wide(value);
-        let bytes = size_of_val(value.as_slice()) as u32;
-
-        // SAFETY: both strings are null-terminated and outlive the call, and `bytes` is the length
-        // of `value` in bytes, its terminator included, which is what a string value expects.
-        let set = unsafe { RegSetValueExW(self.0, name.as_ptr(), 0, kind, value.as_ptr().cast(), bytes) };
-
-        check(set)
-    }
-}
-
-impl Drop for RegistryKey {
-    fn drop(&mut self) {
-        // SAFETY: the key comes from RegOpenKeyExW and is closed exactly once.
-        unsafe { RegCloseKey(self.0) };
-    }
-}
-
-fn check(status: WIN32_ERROR) -> io::Result<()> {
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(io::Error::from_raw_os_error(status as i32))
+        _ => None,
     }
 }
 
@@ -426,6 +343,11 @@ mod tests {
             Some(r"C:\tools;%USERPROFILE%\bin;C:\Users\me\AppData\Local\peekr\current")
         );
         assert_eq!(edited_path("", DIR, true).as_deref(), Some(DIR), "an empty PATH");
+        assert_eq!(
+            edited_path(r"C:\tools;", DIR, true).as_deref(),
+            Some(r"C:\tools;C:\Users\me\AppData\Local\peekr\current;"),
+            "a trailing separator is kept after the new entry"
+        );
 
         let listed = r"C:\tools;c:\users\me\appdata\local\peekr\current\";
         assert_eq!(
@@ -437,12 +359,23 @@ mod tests {
 
     #[test]
     fn a_directory_is_removed_and_nothing_else_is() {
-        let path = format!(r"C:\tools;{DIR};%USERPROFILE%\bin;");
+        let path = format!(r"C:\tools;;{DIR};%USERPROFILE%\bin;");
 
         assert_eq!(
             edited_path(&path, DIR, false).as_deref(),
-            Some(r"C:\tools;%USERPROFILE%\bin")
+            Some(r"C:\tools;;%USERPROFILE%\bin;"),
+            "the empty entry and the trailing separator stay"
         );
         assert_eq!(edited_path(r"C:\tools", DIR, false), None, "not there to begin with");
+    }
+
+    #[test]
+    fn adding_and_removing_gives_back_the_path_as_it_was() {
+        for path in ["", r"C:\tools", r"C:\tools;", r"C:\tools;;%USERPROFILE%\bin;"] {
+            let added = edited_path(path, DIR, true).expect("added");
+            let removed = edited_path(&added, DIR, false).expect("removed");
+
+            assert_eq!(removed, path);
+        }
     }
 }
