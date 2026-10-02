@@ -63,6 +63,12 @@ pub fn single_instance() -> Option<InstanceLock> {
     (!taken).then_some(InstanceLock(None))
 }
 
+/// Nothing to do: Velopack only installs an `AppImage` here, which goes wherever the user puts
+/// it, and calls its install and uninstall hooks on Windows alone.
+pub fn add_to_path(_dir: &std::path::Path) {}
+
+pub fn remove_from_path(_dir: &std::path::Path) {}
+
 /// Neither X11 nor Wayland lets an opaque window be given a shape of its own, so a window that
 /// draws its own frame keeps its corners square here.
 pub fn use_own_frame(_window: &winit::window::Window, _radius: u32) {}

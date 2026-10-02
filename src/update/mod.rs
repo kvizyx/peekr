@@ -14,10 +14,12 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use anyhow::{Result, anyhow};
+use velopack::locator::{self, LocationContext, VelopackLocator};
 use velopack::sources::HttpSource;
 use velopack::{HttpOptions, UpdateCheck, UpdateInfo, UpdateManager, VelopackApp};
 
 use self::progress::Progress;
+use crate::platform;
 
 /// Where the releases are. `releases/latest/download/<asset>` redirects to the newest published
 /// release's copy of that asset, so Velopack finds its feed and packages without a GitHub API
@@ -33,9 +35,38 @@ const CHECK_TIMEOUT_MS: u64 = 5_000;
 /// arguments of its own, which this handles and then ends the process; it has to come before
 /// anything else looks at the arguments.
 pub fn init() {
-    // A downloaded update is installed by `install`, which only the tray app runs: a capture
-    // started from a system shortcut has no business restarting the app from under it.
-    VelopackApp::build().set_auto_apply_on_startup(false).run();
+    VelopackApp::build()
+        // A downloaded update is installed by `install`, which only the tray app runs: a capture
+        // started from a system shortcut has no business restarting the app from under it.
+        .set_auto_apply_on_startup(false)
+        // An update registers the command too, so that installations from before there was one
+        // get it on their next update.
+        .on_after_install_fast_callback(|_| register_command())
+        .on_after_update_fast_callback(|_| register_command())
+        .on_before_uninstall_fast_callback(|_| unregister_command())
+        .run();
+}
+
+/// Puts the installed `peekr` on the user's `PATH`, so that it runs from any console. A portable
+/// copy is left alone: unpacking a zip is not asking for anything to be changed outside of it.
+fn register_command() {
+    if let Some(locator) = locator()
+        && !locator.get_is_portable()
+    {
+        platform::add_to_path(&locator.get_current_bin_dir());
+    }
+}
+
+fn unregister_command() {
+    if let Some(locator) = locator() {
+        platform::remove_from_path(&locator.get_current_bin_dir());
+    }
+}
+
+fn locator() -> Option<VelopackLocator> {
+    locator::auto_locate_app_manifest(LocationContext::FromCurrentExe)
+        .inspect_err(|e| log::warn!("cannot locate the installation: {e}"))
+        .ok()
 }
 
 /// Installs a newer release, if there is one, and restarts into it: when this returns, the app

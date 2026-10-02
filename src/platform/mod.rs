@@ -9,6 +9,7 @@
 //! - `disable_window_animations()` so windows appear and disappear instantly,
 //! - `config_dir()` for per-user settings,
 //! - `single_instance()` so that only one tray app runs at a time,
+//! - `add_to_path()` and `remove_from_path()` so that an installed `peekr` runs from a console,
 //! - `use_own_frame()` for a window that draws its own frame.
 
 #[cfg(target_os = "linux")]
