@@ -3,12 +3,6 @@ use std::sync::mpsc::Receiver;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::ConnectionExt as _;
 
-/// Console output works out of the box on Linux.
-pub fn attach_parent_console() {}
-
-/// X11 and Wayland report monitor geometry in physical pixels already.
-pub fn init_dpi_awareness() {}
-
 /// Returns memory freed by the allocator back to the system.
 pub fn trim_working_set() {
     #[cfg(target_env = "gnu")]
@@ -63,19 +57,6 @@ pub fn single_instance() -> Option<InstanceLock> {
     (!taken).then_some(InstanceLock(None))
 }
 
-/// Nothing to do: Velopack only installs an `AppImage` here, which goes wherever the user puts
-/// it, and calls its install and uninstall hooks on Windows alone.
-pub fn add_to_path(_dir: &std::path::Path) {}
-
-pub fn remove_from_path(_dir: &std::path::Path) {}
-
-/// Neither X11 nor Wayland lets an opaque window be given a shape of its own, so a window that
-/// draws its own frame keeps its corners square here.
-pub fn use_own_frame(_window: &winit::window::Window, _radius: u32) {}
-
-/// X11 and Wayland offer no portable way to opt a window out of compositor animations.
-pub fn disable_window_animations(_window: &winit::window::Window) {}
-
 /// Cursor position in virtual-desktop pixels, if the display server exposes it.
 ///
 /// Wayland does not let clients query the global cursor position, and XWayland only knows it
@@ -126,5 +107,7 @@ pub struct Waker;
 
 impl Waker {
     #[expect(clippy::unused_self, reason = "same API as the Windows waker")]
-    pub fn wake(self) {}
+    pub fn wake(self) {
+        // The event loop wakes up on the channel it blocks on, which the sender has just filled.
+    }
 }

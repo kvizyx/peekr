@@ -1,23 +1,24 @@
 //! OS integration.
 //!
-//! Every platform module provides the same API:
+//! What every platform provides, with an implementation of its own, is re-exported here:
 //!
-//! - `attach_parent_console()` and `init_dpi_awareness()` for process setup,
-//! - `cursor_position()` to pick the monitor to capture,
-//! - `EventLoop` and `Waker` to block the main thread until the app has something to do,
-//! - `trim_working_set()` to give memory back to the system while idle,
-//! - `disable_window_animations()` so windows appear and disappear instantly,
 //! - `config_dir()` for per-user settings,
 //! - `single_instance()` so that only one tray app runs at a time,
-//! - `add_to_path()` and `remove_from_path()` so that an installed `peekr` runs from a console,
-//! - `use_own_frame()` for a window that draws its own frame.
+//! - `cursor_position()` to pick the monitor to capture,
+//! - `trim_working_set()` to give memory back to the system while idle,
+//! - `EventLoop` and `Waker` to block the main thread until the app has something to do.
+//!
+//! What only one system needs stays in its own module, such as [`windows`], and is called from
+//! behind a `cfg` of its own. That keeps a step that does not exist elsewhere from being passed off
+//! as one that is done differently there, and adding a system means writing the list above and
+//! nothing more.
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(windows)]
-mod windows;
+pub mod windows;
 
 #[cfg(target_os = "linux")]
-pub use self::linux::*;
+pub use self::linux::{EventLoop, Waker, config_dir, cursor_position, single_instance, trim_working_set};
 #[cfg(windows)]
-pub use self::windows::*;
+pub use self::windows::{EventLoop, Waker, config_dir, cursor_position, single_instance, trim_working_set};

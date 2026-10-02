@@ -265,7 +265,10 @@ impl AppWindow {
             .create_window(attributes.with_visible(false))
             .context("creating a window")?;
         let window = Rc::new(window);
-        platform::disable_window_animations(&window);
+
+        // X11 and Wayland offer no portable way to opt a window out of compositor animations.
+        #[cfg(windows)]
+        platform::windows::disable_window_animations(&window);
 
         let context = softbuffer::Context::new(Rc::clone(&window)).map_err(|e| anyhow!("{e}"))?;
         let surface = softbuffer::Surface::new(&context, Rc::clone(&window)).map_err(|e| anyhow!("{e}"))?;
@@ -370,8 +373,11 @@ impl AppWindow {
                 self.shown = true;
 
                 // Only now: showing the window is the last thing winit rewrites its styles for.
+                // Neither X11 nor Wayland lets an opaque window be given a shape of its own, so a
+                // window that draws its own frame keeps its corners square there.
+                #[cfg(windows)]
                 if self.frame_radius > 0 {
-                    platform::use_own_frame(&self.window, self.frame_radius);
+                    platform::windows::use_own_frame(&self.window, self.frame_radius);
                 }
             }
 

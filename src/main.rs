@@ -31,12 +31,19 @@ fn main() -> Result<()> {
     update::init();
 
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+
+    // A GUI-subsystem executable has no console of its own; elsewhere the output goes where it
+    // always does.
+    #[cfg(windows)]
     if !raw_args.is_empty() {
-        platform::attach_parent_console();
+        platform::windows::attach_parent_console();
     }
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    platform::init_dpi_awareness();
+
+    // X11 and Wayland report monitor geometry in physical pixels already.
+    #[cfg(windows)]
+    platform::windows::init_dpi_awareness();
 
     let args = Args::parse(raw_args)?;
 
