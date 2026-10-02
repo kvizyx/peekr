@@ -35,7 +35,37 @@ Download the latest release for your platform from the [Releases](https://github
   ./peekr-linux-x86_64.AppImage
   ```
 
-- `peekr-<version>-<platform>.tar.gz`
+- `peekr-<version>-<platform>.tar.gz` (this distribution doesn't support autoupdate)
+
+## Usage
+
+You can use it in 2 modes - default tray app that runs in background and called by shortcut or CLI.
+
+### Tray app
+
+> [!NOTE]
+> On Wayland apps cannot register a global hotkey themselves so you should bind `peekr --capture` to a shortcut in
+> your settings instead.
+
+The default mode. Peekr starts in it whenever it is run without arguments, and stays in the system
+tray until it is quit.
+
+### CLI
+
+```bash
+peekr                             # Start the tray app (the default)
+peekr --capture                   # Select a region once, copy the text and exit
+peekr --image image.png           # Print the text of an image file
+peekr --list-models               # Show the models and which are installed
+
+# Model selection, for any of the above
+peekr --det pp-ocrv5-mobile       # Use this detector instead of the first installed one
+peekr --rec pp-ocrv5-eslav        # Use only this recognizer
+peekr --rec auto                  # Run every installed recognizer (the default)
+```
+
+With `--rec auto` each line keeps its most confident reading. `pp-ocrv5-eslav` reads Cyrillic,
+`pp-ocrv6-small` reads Chinese, Japanese, English and Latin-script languages.
 
 ## License
 

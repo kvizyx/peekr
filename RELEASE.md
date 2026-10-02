@@ -40,16 +40,6 @@ copies of the unpublished release download the whole package.
 Look the draft over, and publish it. Nothing reaches users before that, since `releases/latest`,
 which the app follows, skips drafts. The next time an installed copy starts, it finds the release.
 
-### 4. Update WinGet
-
-```bash
-cargo xtask winget X.Y.Z
-wingetcreate submit --token <token> target/winget/manifests/k/kvizyx/Peekr/X.Y.Z
-```
-
-Velopack keeps the version in "Apps & features" current as it updates, so `winget list` tells the
-truth in between.
-
 ## What not to do
 
 - Do not replace or re-upload assets of a release that is already published. Installed copies
