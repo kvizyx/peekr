@@ -69,7 +69,7 @@ With `--rec auto` each line keeps its most confident reading. `pp-ocrv5-eslav` r
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT](LICENSE) license.
 
 The PaddleOCR models are provided by PaddlePaddle under the Apache License 2.0. Release archives
 include the licenses of the models, ONNX Runtime and all dependencies.
